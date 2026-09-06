@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Командний пункт</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Inter:wght@400;500;600&display=swap">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #F3F1EC; font-family: 'Inter', system-ui, sans-serif; color: #22303C; }
+  .org-title { font-family: 'Fraunces', Georgia, serif; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid #2F6F4E; outline-offset: 1px; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: #E2E2DC; border-radius: 3px; }
+  button { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js"></script>
+
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyD-XGCAZUbhObg5YbvhacplOwmKBCzsWKs",
+    authDomain: "vpbd-5ae9f.firebaseapp.com",
+    projectId: "vpbd-5ae9f",
+    storageBucket: "vpbd-5ae9f.firebasestorage.app",
+    messagingSenderId: "351196275296",
+    appId: "1:351196275296:web:4d2db5d0a29ccb6a66d905"
+  };
+  const VAPID_KEY = "BGw7NIJh46gPamNSLBRKqS7-mzjsEW_2BD0DoohwUxWQ0-kL_67tU2mzUptw9yjqRxqxv44maOUF12iA8TVtLBg";
+
+  firebase.initializeApp(firebaseConfig);
+  window.__auth = firebase.auth();
+  window.__db = firebase.firestore();
+  window.__VAPID_KEY = VAPID_KEY;
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./firebase-messaging-sw.js').catch(() => {});
+  }
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+const ADMIN_EMAIL = 'npdionok@gmail.com';
+
+const COLORS = {
+  bg: '#F3F1EC', surface: '#FFFFFF', ink: '#22303C', muted: '#6B7280',
+  border: '#E2E2DC', task: '#2F6F4E', taskLight: '#E7F0EA',
+  gold: '#B8863B', goldLight: '#F5ECDC', danger: '#B5482A', dangerLight: '#F7E8E2',
+  info: '#3B6EA5', infoLight: '#E4EDF6',
+};
+
+const STATUS_LABEL = { new: 'Нове', in_progress: 'В роботі', done: 'Виконано' };
+const STATUS_COLOR = {
+  new: { bg: COLORS.infoLight, fg: COLORS.info },
+  in_progress: { bg: COLORS.goldLight, fg: COLORS.gold },
+  done: { bg: COLORS.taskLight, fg: COLORS.task },
+};
+
+function fmtTime(ts) {
+  if (!ts) return '—';
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  return d.toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function isOverdue(task) {
+  if (!task.dueDate || task.status === 'done') return false;
+  return task.dueDate < todayKey();
+}
+
+async function logAudit(actor, action, summary) {
+  try {
+    await window.__db.collection('auditLog').add({
+      actor, action, summary, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {}
+}
+
+function authErrorMessage(code) {
+  const map = {
+    'auth/invalid-email': 'Некоректна адреса пошти.',
+    'auth/user-not-found': 'Такого користувача не знайдено.',
+    'auth/wrong-password': 'Невірний пароль.',
+    'auth/invalid-credential': 'Невірна пошта або пароль.',
+    'auth/email-already-in-use': 'Ця пошта вже зареєстрована. Спробуй увійти.',
+    'auth/weak-password': 'Пароль має містити щонайменше 6 символів.',
+    'auth/too-many-requests': 'Забагато спроб. Спробуй трохи пізніше.',
+  };
+  return map[code] || 'Щось пішло не так. Спробуй ще раз.';
+}
+
+function LoginScreen() {
+  const [mode, setMode] = useState('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setError('');
+    if (!email.trim() || !password) { setError('Заповни обидва поля.'); return; }
+    setBusy(true);
+    try {
+      if (mode === 'signin') {
+        await window.__auth.signInWithEmailAndPassword(email.trim(), password);
+      } else {
+        await window.__auth.createUserWithEmailAndPassword(email.trim(), password);
+      }
+    } catch (err) {
+      setError(authErrorMessage(err.code));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: COLORS.bg }}>
+      <div style={{ width: 320, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 28 }}>
+        <h1 className="org-title" style={{ fontSize: 22, fontWeight: 600, margin: '0 0 4px' }}>Командний пункт</h1>
+        <p style={{ fontSize: 13, color: COLORS.muted, margin: '0 0 20px' }}>
+          {mode === 'signin' ? 'Увійди у спільний простір' : 'Створи акаунт, щоб приєднатись'}
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Пошта" type="email"
+            style={{ padding: '10px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
+          <input value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && submit()}
+            placeholder="Пароль" type="password"
+            style={{ padding: '10px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
+          {error && <div style={{ fontSize: 13, color: COLORS.danger }}>{error}</div>}
+          <button onClick={submit} disabled={busy}
+            style={{ padding: '10px 12px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1 }}>
+            {busy ? 'Зачекай…' : mode === 'signin' ? 'Увійти' : 'Зареєструватися'}
+          </button>
+          <button onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(''); }}
+            style={{ border: 'none', background: 'none', color: COLORS.muted, fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>
+            {mode === 'signin' ? 'Ще немає акаунту? Зареєструватися' : 'Вже є акаунт? Увійти'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PendingScreen({ email }) {
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: COLORS.bg }}>
+      <div style={{ width: 340, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 28, textAlign: 'center' }}>
+        <h1 className="org-title" style={{ fontSize: 22, fontWeight: 600, margin: '0 0 12px' }}>Майже готово</h1>
+        <p style={{ fontSize: 14, color: COLORS.muted, lineHeight: 1.5, margin: '0 0 20px' }}>
+          Акаунт <strong style={{ color: COLORS.ink }}>{email}</strong> зареєстровано.
+          Очікує підтвердження адміністратора.
+        </p>
+        <button onClick={() => window.__auth.signOut()}
+          style={{ border: 'none', background: 'none', color: COLORS.muted, fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>
+          Вийти
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function useNotificationSetup(user, approved) {
+  useEffect(() => {
+    if (!user || !approved) return;
+    if (!('Notification' in window)) return;
+    (async () => {
+      try {
+        let permission = Notification.permission;
+        if (permission === 'default') permission = await Notification.requestPermission();
+        if (permission !== 'granted') return;
+        const messaging = firebase.messaging();
+        const token = await messaging.getToken({ vapidKey: window.__VAPID_KEY });
+        if (token) await window.__db.collection('users').doc(user.uid).set({ fcmToken: token }, { merge: true });
+        messaging.onMessage((payload) => {
+          const n = payload.notification || {};
+          new Notification(n.title || 'Командний пункт', { body: n.body || '' });
+        });
+      } catch (err) {}
+    })();
+  }, [user, approved]);
+}
+
+function Card({ children, style }) {
+  return <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, ...style }}>{children}</div>;
+}
+
+function SearchBox({ value, onChange, placeholder }) {
+  return (
+    <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder || 'Пошук…'}
+      style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, marginBottom: 14 }} />
+  );
+}
+
+function AdminTab() {
+  const [users, setUsers] = useState(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const snap = await window.__db.collection('users').get();
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (a.approved === b.approved ? 0 : a.approved ? 1 : -1));
+      setUsers(list);
+    } catch (err) { setError('Не вдалося завантажити список.'); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function setApproved(id, value) {
+    try {
+      await window.__db.collection('users').doc(id).set({ approved: value }, { merge: true });
+      setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, approved: value } : u)));
+    } catch (err) { setError('Не вдалося оновити статус.'); }
+  }
+
+  if (error) return <div style={{ color: COLORS.danger, fontSize: 14 }}>{error}</div>;
+  if (!users) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 12 }}>Учасники</div>
+      {users.length === 0 ? (
+        <div style={{ color: COLORS.muted, fontSize: 14 }}>Ще ніхто не реєструвався.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {users.map((u) => (
+            <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8 }}>
+              <span style={{ flex: 1, fontSize: 14 }}>{u.email || u.id}</span>
+              <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: u.approved ? COLORS.taskLight : COLORS.dangerLight, color: u.approved ? COLORS.task : COLORS.danger }}>
+                {u.approved ? 'Підтверджено' : 'Очікує'}
+              </span>
+              {u.email !== ADMIN_EMAIL && (
+                <button onClick={() => setApproved(u.id, !u.approved)}
+                  style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 12, cursor: 'pointer' }}>
+                  {u.approved ? 'Скасувати' : 'Підтвердити'}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, margin: '24px 0 12px' }}>Журнал аудиту</div>
+      <AuditLogList />
+    </div>
+  );
+}
+
+function AuditLogList() {
+  const [entries, setEntries] = useState(null);
+  useEffect(() => {
+    const unsub = window.__db.collection('auditLog').orderBy('createdAt', 'desc').limit(100)
+      .onSnapshot((snap) => setEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return unsub;
+  }, []);
+  if (!entries) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
+  if (entries.length === 0) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Записів ще немає.</div>;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 400, overflowY: 'auto' }}>
+      {entries.map((e) => (
+        <div key={e.id} style={{ fontSize: 12, color: COLORS.muted, padding: '6px 10px', borderBottom: `1px solid ${COLORS.border}` }}>
+          <span style={{ color: COLORS.ink }}>{fmtTime(e.createdAt)}</span> · {e.actor} · {e.action} — {e.summary}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DashboardTab({ user }) {
+  const [tasks, setTasks] = useState([]);
+  const [logEntries, setLogEntries] = useState([]);
+  const [shifts, setShifts] = useState([]);
+
+  useEffect(() => {
+    const u1 = window.__db.collection('tasks').onSnapshot((s) => setTasks(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    const u2 = window.__db.collection('situationLog').orderBy('createdAt', 'desc').limit(5)
+      .onSnapshot((s) => setLogEntries(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    const u3 = window.__db.collection('shifts').where('date', '==', todayKey())
+      .onSnapshot((s) => setShifts(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return () => { u1(); u2(); u3(); };
+  }, []);
+
+  const counts = useMemo(() => {
+    const c = { new: 0, in_progress: 0, done: 0, overdue: 0 };
+    tasks.forEach((t) => {
+      c[t.status] = (c[t.status] || 0) + 1;
+      if (isOverdue(t)) c.overdue += 1;
+    });
+    return c;
+  }, [tasks]);
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 24 }}>
+        <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>Нові</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.info }}>{counts.new || 0}</div></Card>
+        <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>В роботі</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.gold }}>{counts.in_progress || 0}</div></Card>
+        <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>Виконано</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.task }}>{counts.done || 0}</div></Card>
+        <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>Прострочено</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.danger }}>{counts.overdue || 0}</div></Card>
+      </div>
+
+      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 10 }}>Сьогоднішня зміна</div>
+      {shifts.length === 0 ? (
+        <div style={{ color: COLORS.muted, fontSize: 14, marginBottom: 24 }}>Ніхто не призначений на сьогодні.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 24 }}>
+          {shifts.map((s) => (
+            <Card key={s.id} style={{ padding: '10px 14px', fontSize: 13 }}>{s.timeRange} — {s.assignedTo}{s.note ? ` (${s.note})` : ''}</Card>
+          ))}
+        </div>
+      )}
+
+      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 10 }}>Останні записи журналу</div>
+      {logEntries.length === 0 ? (
+        <div style={{ color: COLORS.muted, fontSize: 14 }}>Записів ще немає.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {logEntries.map((e) => (
+            <Card key={e.id} style={{ padding: '10px 14px', fontSize: 13 }}>
+              <div style={{ color: COLORS.muted, fontSize: 11, marginBottom: 2 }}>{fmtTime(e.createdAt)} · {e.author}</div>
+              {e.text}
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SituationLogTab({ user }) {
+  const [entries, setEntries] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [text, setText] = useState('');
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    const unsub = window.__db.collection('situationLog').orderBy('createdAt', 'desc')
+      .onSnapshot((snap) => { setEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoaded(true); }, () => setLoaded(true));
+    return unsub;
+  }, []);
+
+  async function addEntry() {
+    const t = text.trim();
+    if (!t) return;
+    setText('');
+    await window.__db.collection('situationLog').add({ text: t, author: user.email, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    logAudit(user.email, 'Журнал обстановки', t.slice(0, 60));
+  }
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return entries;
+    const q = query.toLowerCase();
+    return entries.filter((e) => (e.text || '').toLowerCase().includes(q) || (e.author || '').toLowerCase().includes(q));
+  }, [entries, query]);
+
+  if (!loaded) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Новий запис у журнал обстановки…"
+          style={{ flex: 1, padding: '9px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, minHeight: 60, resize: 'vertical' }} />
+        <button onClick={addEntry} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}>Додати</button>
+      </div>
+      <SearchBox value={query} onChange={setQuery} placeholder="Пошук у журналі…" />
+      {filtered.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.muted, fontSize: 14 }}>Записів немає.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {filtered.map((e) => (
+            <Card key={e.id}>
+              <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(e.createdAt)} · {e.author}</div>
+              <div style={{ fontSize: 14 }}>{e.text}</div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ShiftsTab({ user }) {
+  const [shifts, setShifts] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [date, setDate] = useState(todayKey());
+  const [timeRange, setTimeRange] = useState('');
+  const [assignedTo, setAssignedTo] = useState(user.email);
+  const [note, setNote] = useState('');
+
+  useEffect(() => {
+    const unsub = window.__db.collection('shifts').orderBy('date', 'desc')
+      .onSnapshot((snap) => { setShifts(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoaded(true); }, () => setLoaded(true));
+    return unsub;
+  }, []);
+
+  async function addShift() {
+    if (!timeRange.trim() || !assignedTo.trim()) return;
+    await window.__db.collection('shifts').add({
+      date, timeRange: timeRange.trim(), assignedTo: assignedTo.trim(), note: note.trim(),
+      createdBy: user.email, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    logAudit(user.email, 'Зміна', `${date} ${timeRange} — ${assignedTo}`);
+    setTimeRange(''); setNote('');
+  }
+
+  async function deleteShift(id) {
+    await window.__db.collection('shifts').doc(id).delete();
+  }
+
+  if (!loaded) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
+
+  return (
+    <div>
+      <Card style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 13 }} />
+          <input value={timeRange} onChange={(e) => setTimeRange(e.target.value)} placeholder="Час (напр. 08:00–20:00)"
+            style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, width: 160 }} />
+          <input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} placeholder="Пошта відповідального"
+            style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, flex: 1, minWidth: 160 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Примітка (необов'язково)"
+            style={{ flex: 1, padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
+          <button onClick={addShift} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Додати</button>
+        </div>
+      </Card>
+
+      {shifts.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.muted, fontSize: 14 }}>Змін ще немає.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {shifts.map((s) => (
+            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', background: s.date === todayKey() ? COLORS.taskLight : COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 13, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 600, minWidth: 90 }}>{s.date}</span>
+              <span>{s.timeRange}</span>
+              <span style={{ color: COLORS.muted }}>{s.assignedTo}</span>
+              {s.note && <span style={{ color: COLORS.muted, flex: 1 }}>{s.note}</span>}
+              {(s.createdBy === user.email || user.email === ADMIN_EMAIL) && (
+                <button onClick={() => deleteShift(s.id)} style={{ border: 'none', background: 'none', color: COLORS.danger, cursor: 'pointer', fontSize: 16 }}>×</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReportsTab({ user }) {
+  const [reports, setReports] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [summary, setSummary] = useState('');
+
+  useEffect(() => {
+    const unsub = window.__db.collection('reports').orderBy('createdAt', 'desc')
+      .onSnapshot((snap) => { setReports(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoaded(true); }, () => setLoaded(true));
+    return unsub;
+  }, []);
+
+  async function addReport() {
+    const t = summary.trim();
+    if (!t) return;
+    setSummary('');
+    await window.__db.collection('reports').add({ summary: t, author: user.email, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    logAudit(user.email, 'Доповідь', t.slice(0, 60));
+  }
+
+  if (!loaded) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
+
+  return (
+    <div>
+      <Card style={{ marginBottom: 20 }}>
+        <textarea value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="Текст доповіді за зміну/добу…"
+          style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, minHeight: 90, resize: 'vertical', marginBottom: 10, boxSizing: 'border-box' }} />
+        <button onClick={addReport} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Подати доповідь</button>
+      </Card>
+      {reports.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.muted, fontSize: 14 }}>Доповідей ще немає.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {reports.map((r) => (
+            <Card key={r.id}>
+              <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(r.createdAt)} · {r.author}</div>
+              <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{r.summary}</div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TasksTab({ user }) {
+  const [tasks, setTasks] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    const unsub = window.__db.collection('tasks').orderBy('createdAt', 'desc')
+      .onSnapshot((snap) => { setTasks(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoaded(true); }, () => setLoaded(true));
+    return unsub;
+  }, []);
+
+  async function createTask() {
+    const t = title.trim();
+    if (!t) return;
+    await window.__db.collection('tasks').add({
+      title: t, description: description.trim(), dueDate: dueDate || null, status: 'new',
+      createdBy: user.email, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      claimedBy: null, claimedAt: null, completedAt: null,
+    });
+    logAudit(user.email, 'Створено завдання', t);
+    setTitle(''); setDescription(''); setDueDate(''); setShowForm(false);
+  }
+
+  async function claimTask(task) {
+    await window.__db.collection('tasks').doc(task.id).set({ status: 'in_progress', claimedBy: user.email, claimedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    logAudit(user.email, 'Взято завдання', task.title);
+  }
+  async function completeTask(task) {
+    await window.__db.collection('tasks').doc(task.id).set({ status: 'done', completedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    logAudit(user.email, 'Виконано завдання', task.title);
+  }
+  async function reopenTask(task) {
+    await window.__db.collection('tasks').doc(task.id).set({ status: 'new', claimedBy: null, claimedAt: null, completedAt: null }, { merge: true });
+    logAudit(user.email, 'Повернуто завдання', task.title);
+  }
+  async function deleteTask(task) {
+    await window.__db.collection('tasks').doc(task.id).delete();
+    logAudit(user.email, 'Видалено завдання', task.title);
+  }
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return tasks;
+    const q = query.toLowerCase();
+    return tasks.filter((t) => (t.title || '').toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q));
+  }, [tasks, query]);
+
+  if (!loaded) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
+
+  return (
+    <div>
+      <button onClick={() => setShowForm((v) => !v)}
+        style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginBottom: 16 }}>
+        {showForm ? 'Скасувати' : '+ Нове завдання'}
+      </button>
+
+      {showForm && (
+        <Card style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Назва завдання"
+            style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Опис (необов'язково)"
+            style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, minHeight: 70, resize: 'vertical' }} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <label style={{ fontSize: 12, color: COLORS.muted }}>Термін:</label>
+            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)}
+              style={{ padding: '7px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 13 }} />
+            <button onClick={createTask} style={{ marginLeft: 'auto', padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+              Створити
+            </button>
+          </div>
+        </Card>
+      )}
+
+      <SearchBox value={query} onChange={setQuery} placeholder="Пошук завдань…" />
+
+      {filtered.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: COLORS.muted, fontSize: 14 }}>Завдань не знайдено.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {filtered.map((t) => {
+            const sc = STATUS_COLOR[t.status] || STATUS_COLOR.new;
+            const mine = t.claimedBy === user.email;
+            const overdue = isOverdue(t);
+            return (
+              <Card key={t.id} style={overdue ? { borderColor: COLORS.danger } : undefined}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{t.title}</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {overdue && <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: COLORS.dangerLight, color: COLORS.danger }}>Прострочено</span>}
+                    <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: sc.bg, color: sc.fg, whiteSpace: 'nowrap' }}>{STATUS_LABEL[t.status] || t.status}</span>
+                  </div>
+                </div>
+                {t.description && <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 8 }}>{t.description}</div>}
+                <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                  <span>Створив: {t.createdBy}</span>
+                  <span>Створено: {fmtTime(t.createdAt)}</span>
+                  {t.claimedBy && <span>Взяв: {t.claimedBy} ({fmtTime(t.claimedAt)})</span>}
+                  {t.completedAt && <span>Виконано: {fmtTime(t.completedAt)}</span>}
+                  {t.dueDate && <span>Термін: {t.dueDate}</span>}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {t.status === 'new' && <button onClick={() => claimTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: COLORS.info, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Взяти в роботу</button>}
+                  {t.status === 'in_progress' && mine && <button onClick={() => completeTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: COLORS.task, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Позначити виконаним</button>}
+                  {t.status !== 'new' && (mine || user.email === ADMIN_EMAIL) && <button onClick={() => reopenTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Повернути</button>}
+                  {(t.createdBy === user.email || user.email === ADMIN_EMAIL) && <button onClick={() => deleteTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'none', color: COLORS.danger, fontSize: 12, cursor: 'pointer' }}>Видалити</button>}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChatTab({ user }) {
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState('');
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    const unsub = window.__db.collection('messages').orderBy('createdAt', 'asc').limitToLast(200)
+      .onSnapshot((snap) => setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return unsub;
+  }, []);
+  useEffect(() => { bottomRef.current && bottomRef.current.scrollIntoView({ block: 'end' }); }, [messages.length]);
+
+  async function send() {
+    const t = text.trim();
+    if (!t) return;
+    setText('');
+    await window.__db.collection('messages').add({ text: t, senderEmail: user.email, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: 500 }}>
+      <div style={{ flex: 1, overflowY: 'auto', border: `1px solid ${COLORS.border}`, borderRadius: 10, background: COLORS.surface, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {messages.length === 0 && <div style={{ color: COLORS.muted, fontSize: 14, textAlign: 'center', marginTop: 20 }}>Повідомлень ще немає.</div>}
+        {messages.map((m) => {
+          const mine = m.senderEmail === user.email;
+          return (
+            <div key={m.id} style={{ alignSelf: mine ? 'flex-end' : 'flex-start', maxWidth: '75%' }}>
+              <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 2, textAlign: mine ? 'right' : 'left' }}>{mine ? 'Ти' : m.senderEmail} · {fmtTime(m.createdAt)}</div>
+              <div style={{ background: mine ? COLORS.taskLight : COLORS.bg, borderRadius: 10, padding: '8px 12px', fontSize: 14 }}>{m.text}</div>
+            </div>
+          );
+        })}
+        <div ref={bottomRef} />
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder="Повідомлення…"
+          style={{ flex: 1, padding: '10px 14px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
+        <button onClick={send} style={{ padding: '10px 18px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Надіслати</button>
+      </div>
+    </div>
+  );
+}
+
+function Board({ user, isAdmin }) {
+  const [tab, setTab] = useState('dashboard');
+  useNotificationSetup(user, true);
+
+  const tabs = [
+    { key: 'dashboard', label: 'Головна' },
+    { key: 'log', label: 'Журнал' },
+    { key: 'tasks', label: 'Завдання' },
+    { key: 'shifts', label: 'Зміни' },
+    { key: 'reports', label: 'Доповіді' },
+    { key: 'chat', label: 'Чат' },
+  ];
+  if (isAdmin) tabs.push({ key: 'admin', label: 'Учасники' });
+
+  return (
+    <div style={{ background: COLORS.bg, minHeight: '100vh' }}>
+      <div style={{ maxWidth: 920, margin: '0 auto', padding: '32px 20px 60px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+          <h1 className="org-title" style={{ fontSize: 26, fontWeight: 600, margin: 0 }}>Командний пункт</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 13, color: COLORS.muted }}>{user.email}</span>
+            <button onClick={() => window.__auth.signOut()} style={{ border: 'none', background: 'none', color: COLORS.muted, fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>Вийти</button>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 18, borderBottom: `1px solid ${COLORS.border}`, marginTop: 20, marginBottom: 28, flexWrap: 'wrap' }}>
+          {tabs.map((t) => (
+            <button key={t.key} onClick={() => setTab(t.key)} style={{
+              background: 'none', border: 'none',
+              borderBottom: tab === t.key ? `2px solid ${COLORS.task}` : '2px solid transparent',
+              padding: '10px 2px', fontSize: 14, fontWeight: tab === t.key ? 600 : 400,
+              color: tab === t.key ? COLORS.ink : COLORS.muted, cursor: 'pointer', marginBottom: -1,
+            }}>{t.label}</button>
+          ))}
+        </div>
+
+        {tab === 'dashboard' && <DashboardTab user={user} />}
+        {tab === 'log' && <SituationLogTab user={user} />}
+        {tab === 'tasks' && <TasksTab user={user} />}
+        {tab === 'shifts' && <ShiftsTab user={user} />}
+        {tab === 'reports' && <ReportsTab user={user} />}
+        {tab === 'chat' && <ChatTab user={user} />}
+        {tab === 'admin' && isAdmin && <AdminTab />}
+      </div>
+    </div>
+  );
+}
+
+function Root() {
+  const [user, setUser] = useState(undefined);
+  const [approved, setApproved] = useState(null);
+
+  useEffect(() => {
+    const unsub = window.__auth.onAuthStateChanged(async (u) => {
+      if (!u) { setUser(null); setApproved(null); return; }
+      const isAdmin = u.email === ADMIN_EMAIL;
+      const ref = window.__db.collection('users').doc(u.uid);
+      try {
+        const snap = await ref.get();
+        if (!snap.exists) {
+          await ref.set({ email: u.email, approved: isAdmin });
+          setApproved(isAdmin);
+        } else {
+          const data = snap.data();
+          setApproved(isAdmin ? true : !!data.approved);
+        }
+      } catch (err) { setApproved(false); }
+      setUser(u);
+    });
+    return unsub;
+  }, []);
+
+  if (user === undefined) return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: COLORS.bg, color: COLORS.muted }}>Завантаження…</div>;
+  if (!user) return <LoginScreen />;
+  if (approved === null) return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: COLORS.bg, color: COLORS.muted }}>Завантаження…</div>;
+  if (!approved) return <PendingScreen email={user.email} />;
+  return <Board user={user} isAdmin={user.email === ADMIN_EMAIL} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+</script>
+</body>
+</html>
