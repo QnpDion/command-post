@@ -1,5 +1,5 @@
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js');
 
 firebase.initializeApp({
   apiKey: "AIzaSyD-XGCAZUbhObg5YbvhacplOwmKBCzsWKs",
@@ -14,8 +14,7 @@ const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
   const n = payload.notification || {};
-  self.registration.showNotification(n.title || 'Дошка завдань', {
+  self.registration.showNotification(n.title || 'Командний пункт', {
     body: n.body || '',
-    icon: undefined,
   });
 });

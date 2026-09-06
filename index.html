@@ -22,11 +22,11 @@
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
 
 <script>
   const firebaseConfig = {
@@ -54,6 +54,7 @@
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 const ADMIN_EMAIL = 'npdionok@gmail.com';
+const APP_NAME = 'Командний пункт';
 
 const COLORS = {
   bg: '#F3F1EC', surface: '#FFFFFF', ink: '#22303C', muted: '#6B7280',
@@ -105,6 +106,7 @@ function authErrorMessage(code) {
     'auth/email-already-in-use': 'Ця пошта вже зареєстрована. Спробуй увійти.',
     'auth/weak-password': 'Пароль має містити щонайменше 6 символів.',
     'auth/too-many-requests': 'Забагато спроб. Спробуй трохи пізніше.',
+    'auth/invalid-verification-code': 'Невірний код. Перевір застосунок і спробуй ще раз.',
   };
   return map[code] || 'Щось пішло не так. Спробуй ще раз.';
 }
@@ -115,6 +117,9 @@ function LoginScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const [mfaResolver, setMfaResolver] = useState(null);
+  const [mfaCode, setMfaCode] = useState('');
 
   async function submit() {
     setError('');
@@ -127,10 +132,55 @@ function LoginScreen() {
         await window.__auth.createUserWithEmailAndPassword(email.trim(), password);
       }
     } catch (err) {
+      if (err.code === 'auth/multi-factor-auth-required') {
+        setMfaResolver(err.resolver);
+      } else {
+        setError(authErrorMessage(err.code));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitMfaCode() {
+    setError('');
+    if (!/^\d{6}$/.test(mfaCode.trim())) { setError('Введи 6-значний код.'); return; }
+    setBusy(true);
+    try {
+      const hint = mfaResolver.hints[0];
+      const assertion = firebase.auth.TotpMultiFactorGenerator.assertionForSignIn(hint.uid, mfaCode.trim());
+      await mfaResolver.resolveSignIn(assertion);
+    } catch (err) {
       setError(authErrorMessage(err.code));
     } finally {
       setBusy(false);
     }
+  }
+
+  if (mfaResolver) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: COLORS.bg }}>
+        <div style={{ width: 320, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 28 }}>
+          <h1 className="org-title" style={{ fontSize: 20, fontWeight: 600, margin: '0 0 4px' }}>Код підтвердження</h1>
+          <p style={{ fontSize: 13, color: COLORS.muted, margin: '0 0 20px' }}>Відкрий Google Authenticator і введи поточний код</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              onKeyDown={(e) => e.key === 'Enter' && submitMfaCode()}
+              placeholder="123456" inputMode="numeric"
+              style={{ padding: '10px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 20, letterSpacing: 4, textAlign: 'center' }} />
+            {error && <div style={{ fontSize: 13, color: COLORS.danger }}>{error}</div>}
+            <button onClick={submitMfaCode} disabled={busy}
+              style={{ padding: '10px 12px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1 }}>
+              {busy ? 'Перевірка…' : 'Підтвердити'}
+            </button>
+            <button onClick={() => { setMfaResolver(null); setMfaCode(''); setError(''); }}
+              style={{ border: 'none', background: 'none', color: COLORS.muted, fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>
+              Назад
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -211,29 +261,94 @@ function SearchBox({ value, onChange, placeholder }) {
   );
 }
 
-async function exportBackup() {
-  const collections = ['tasks', 'messages', 'situationLog', 'shifts', 'reports', 'users', 'auditLog'];
-  const data = {};
-  for (const name of collections) {
-    const snap = await window.__db.collection(name).get();
-    data[name] = snap.docs.map((d) => {
-      const obj = { id: d.id, ...d.data() };
-      Object.keys(obj).forEach((k) => {
-        if (obj[k] && typeof obj[k].toDate === 'function') obj[k] = obj[k].toDate().toISOString();
-      });
-      return obj;
-    });
+function SecuritySetup({ onDone }) {
+  const [step, setStep] = useState('start');
+  const [secret, setSecret] = useState(null);
+  const [qrUrl, setQrUrl] = useState('');
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function startEnrollment() {
+    setError('');
+    setBusy(true);
+    try {
+      const user = window.__auth.currentUser;
+      const mfSession = await firebase.auth.multiFactor(user).getSession();
+      const totpSecret = await firebase.auth.TotpMultiFactorGenerator.generateSecret(mfSession);
+      const otpauthUrl = totpSecret.generateQrCodeUrl(user.email, APP_NAME);
+      setSecret(totpSecret);
+      setQrUrl(`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(otpauthUrl)}`);
+      setStep('scan');
+    } catch (err) {
+      if (err.code === 'auth/requires-recent-login') {
+        setError('Потрібно увійти заново для налаштування безпеки. Вийди і зайди ще раз, тоді спробуй знову.');
+      } else {
+        setError('Не вдалося почати налаштування. Спробуй ще раз.');
+      }
+    } finally {
+      setBusy(false);
+    }
   }
-  data.exportedAt = new Date().toISOString();
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `backup-${todayKey()}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+
+  async function confirmEnrollment() {
+    setError('');
+    if (!/^\d{6}$/.test(code.trim())) { setError('Введи 6-значний код.'); return; }
+    setBusy(true);
+    try {
+      const user = window.__auth.currentUser;
+      const assertion = firebase.auth.TotpMultiFactorGenerator.assertionForEnrollment(secret, code.trim());
+      await firebase.auth.multiFactor(user).enroll(assertion, 'TOTP');
+      logAudit(user.email, 'Безпека', 'Увімкнено двофакторний захист (TOTP)');
+      setStep('done');
+    } catch (err) {
+      setError(authErrorMessage(err.code));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card style={{ marginBottom: 24, borderColor: COLORS.gold }}>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Двофакторний захист акаунту</div>
+      {step === 'start' && (
+        <div>
+          <p style={{ fontSize: 13, color: COLORS.muted, marginBottom: 12 }}>
+            Додай Google Authenticator для додаткового захисту входу. Знадобиться телефон із застосунком Google Authenticator.
+          </p>
+          {error && <div style={{ fontSize: 13, color: COLORS.danger, marginBottom: 10 }}>{error}</div>}
+          <button onClick={startEnrollment} disabled={busy}
+            style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            {busy ? 'Зачекай…' : 'Почати налаштування'}
+          </button>
+        </div>
+      )}
+      {step === 'scan' && (
+        <div>
+          <p style={{ fontSize: 13, color: COLORS.muted, marginBottom: 10 }}>
+            Відкрий Google Authenticator → "+" → "Сканувати QR-код" і наведи на зображення нижче.
+          </p>
+          <img src={qrUrl} alt="QR-код для Google Authenticator" style={{ display: 'block', marginBottom: 12 }} />
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="Код із застосунку" inputMode="numeric"
+              style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 16, letterSpacing: 2, width: 160 }} />
+            <button onClick={confirmEnrollment} disabled={busy}
+              style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              {busy ? 'Перевірка…' : 'Підтвердити'}
+            </button>
+          </div>
+          {error && <div style={{ fontSize: 13, color: COLORS.danger }}>{error}</div>}
+        </div>
+      )}
+      {step === 'done' && (
+        <div>
+          <p style={{ fontSize: 13, color: COLORS.task, marginBottom: 10 }}>Готово! Двофакторний захист увімкнено.</p>
+          <button onClick={onDone} style={{ padding: '9px 16px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 13, cursor: 'pointer' }}>Закрити</button>
+        </div>
+      )}
+    </Card>
+  );
 }
 
 function AdminTab() {
@@ -304,6 +419,31 @@ function AdminTab() {
   );
 }
 
+async function exportBackup() {
+  const collections = ['tasks', 'messages', 'situationLog', 'shifts', 'reports', 'users', 'auditLog'];
+  const data = {};
+  for (const name of collections) {
+    const snap = await window.__db.collection(name).get();
+    data[name] = snap.docs.map((d) => {
+      const obj = { id: d.id, ...d.data() };
+      Object.keys(obj).forEach((k) => {
+        if (obj[k] && typeof obj[k].toDate === 'function') obj[k] = obj[k].toDate().toISOString();
+      });
+      return obj;
+    });
+  }
+  data.exportedAt = new Date().toISOString();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `backup-${todayKey()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function AuditLogList() {
   const [entries, setEntries] = useState(null);
   useEffect(() => {
@@ -328,6 +468,8 @@ function DashboardTab({ user }) {
   const [tasks, setTasks] = useState([]);
   const [logEntries, setLogEntries] = useState([]);
   const [shifts, setShifts] = useState([]);
+  const [showSecurity, setShowSecurity] = useState(false);
+  const [hasMfa, setHasMfa] = useState(true);
 
   useEffect(() => {
     const u1 = window.__db.collection('tasks').onSnapshot((s) => setTasks(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
@@ -336,6 +478,11 @@ function DashboardTab({ user }) {
     const u3 = window.__db.collection('shifts').where('date', '==', todayKey())
       .onSnapshot((s) => setShifts(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
     return () => { u1(); u2(); u3(); };
+  }, []);
+
+  useEffect(() => {
+    const u = window.__auth.currentUser;
+    if (u) setHasMfa((u.multiFactor && u.multiFactor.enrolledFactors && u.multiFactor.enrolledFactors.length > 0));
   }, []);
 
   const counts = useMemo(() => {
@@ -349,6 +496,14 @@ function DashboardTab({ user }) {
 
   return (
     <div>
+      {!hasMfa && !showSecurity && (
+        <Card style={{ marginBottom: 20, borderColor: COLORS.gold, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+          <span style={{ fontSize: 13 }}>Акаунт ще без двофакторного захисту.</span>
+          <button onClick={() => setShowSecurity(true)} style={{ padding: '7px 14px', borderRadius: 6, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Налаштувати</button>
+        </Card>
+      )}
+      {showSecurity && <SecuritySetup onDone={() => { setShowSecurity(false); setHasMfa(true); }} />}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 24 }}>
         <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>Нові</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.info }}>{counts.new || 0}</div></Card>
         <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>В роботі</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.gold }}>{counts.in_progress || 0}</div></Card>
