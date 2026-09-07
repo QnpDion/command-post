@@ -110,6 +110,22 @@ function useLabels() {
   return useContext(LabelsContext);
 }
 
+const ACCENT_PRESETS = [
+  { name: 'Зелений', accent: '#2F6F4E', light: '#E7F0EA' },
+  { name: 'Синій', accent: '#2A5D8A', light: '#E4EDF6' },
+  { name: 'Фіолетовий', accent: '#6B4FA0', light: '#EFE9F7' },
+  { name: 'Теракотовий', accent: '#A64B3D', light: '#F5E6E3' },
+  { name: 'Бірюзовий', accent: '#1F7A73', light: '#E1F0EE' },
+];
+const DEFAULT_ACCENT = ACCENT_PRESETS[0];
+const ThemeContext = createContext(DEFAULT_ACCENT);
+function useTheme() {
+  return useContext(ThemeContext);
+}
+function accentByHex(hex) {
+  return ACCENT_PRESETS.find((p) => p.accent === hex) || DEFAULT_ACCENT;
+}
+
 function authErrorMessage(code) {
   const map = {
     'auth/invalid-email': 'Некоректна адреса пошти.',
@@ -230,6 +246,8 @@ function ProfileTab({ user }) {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [loaded, setLoaded] = useState(false);
+  const theme = useTheme();
+  const [accentSaved, setAccentSaved] = useState(false);
 
   useEffect(() => {
     window.__db.collection('users').doc(user.uid).get().then((snap) => {
@@ -252,26 +270,51 @@ function ProfileTab({ user }) {
     }
   }
 
+  async function setAccent(hex) {
+    try {
+      await window.__db.collection('users').doc(user.uid).set({ themeAccent: hex }, { merge: true });
+      setAccentSaved(true);
+      setTimeout(() => setAccentSaved(false), 1500);
+    } catch (err) {}
+  }
+
   if (!loaded) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
 
   return (
-    <Card style={{ maxWidth: 400 }}>
-      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Особистий кабінет</div>
-      <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 16 }}>Пошта для входу: {user.email}</div>
-      <label style={{ fontSize: 12, color: COLORS.muted, display: 'block', marginBottom: 4 }}>
-        Ім'я, яке бачитимуть інші учасники
-      </label>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <input value={nickname} onChange={(e) => setNickname(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && save()}
-          placeholder="Наприклад: Олег К."
-          style={{ flex: 1, padding: '9px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
-        <button onClick={save} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
-          Зберегти
-        </button>
-      </div>
-      {saved && <div style={{ fontSize: 13, color: COLORS.task, marginTop: 8 }}>Збережено.</div>}
-      {error && <div style={{ fontSize: 13, color: COLORS.danger, marginTop: 8 }}>{error}</div>}
-    </Card>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 400 }}>
+      <Card>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Особистий кабінет</div>
+        <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 16 }}>Пошта для входу: {user.email}</div>
+        <label style={{ fontSize: 12, color: COLORS.muted, display: 'block', marginBottom: 4 }}>
+          Ім'я, яке бачитимуть інші учасники
+        </label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input value={nickname} onChange={(e) => setNickname(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && save()}
+            placeholder="Наприклад: Олег К."
+            style={{ flex: 1, padding: '9px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
+          <button onClick={save} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+            Зберегти
+          </button>
+        </div>
+        {saved && <div style={{ fontSize: 13, color: theme.accent, marginTop: 8 }}>Збережено.</div>}
+        {error && <div style={{ fontSize: 13, color: COLORS.danger, marginTop: 8 }}>{error}</div>}
+      </Card>
+
+      <Card>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Дизайн</div>
+        <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 14 }}>Обери колір акценту — впливає лише на твій вигляд застосунку.</div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {ACCENT_PRESETS.map((p) => (
+            <button key={p.accent} onClick={() => setAccent(p.accent)} title={p.name}
+              style={{
+                width: 36, height: 36, borderRadius: '50%', background: p.accent, cursor: 'pointer',
+                border: theme.accent === p.accent ? `3px solid ${COLORS.ink}` : `1px solid ${COLORS.border}`,
+              }} />
+          ))}
+        </div>
+        {accentSaved && <div style={{ fontSize: 13, color: theme.accent, marginTop: 10 }}>Застосовано.</div>}
+      </Card>
+    </div>
   );
 }
 
@@ -556,8 +599,9 @@ function DashboardTab({ user, isAdmin }) {
   );
 }
 
-function SituationLogTab({ user }) {
+function SituationLogTab({ user, isAdmin }) {
   const dir = useDirectory();
+  const theme = useTheme();
   const [entries, setEntries] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [text, setText] = useState('');
@@ -577,6 +621,20 @@ function SituationLogTab({ user }) {
     logAudit(user.email, 'Журнал обстановки', t.slice(0, 60));
   }
 
+  async function deleteEntry(id) {
+    await window.__db.collection('situationLog').doc(id).delete();
+    logAudit(user.email, 'Журнал обстановки', 'Видалено запис');
+  }
+
+  async function clearAll() {
+    if (!window.confirm('Видалити всі записи журналу без можливості відновлення?')) return;
+    const snap = await window.__db.collection('situationLog').get();
+    const batch = window.__db.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    logAudit(user.email, 'Журнал обстановки', 'Очищено весь журнал');
+  }
+
   const filtered = useMemo(() => {
     if (!query.trim()) return entries;
     const q = query.toLowerCase();
@@ -590,16 +648,28 @@ function SituationLogTab({ user }) {
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Новий запис у журнал обстановки…"
           style={{ flex: 1, padding: '9px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, minHeight: 60, resize: 'vertical' }} />
-        <button onClick={addEntry} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}>Додати</button>
+        <button onClick={addEntry} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}>Додати</button>
       </div>
-      <SearchBox value={query} onChange={setQuery} placeholder="Пошук у журналі…" />
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14 }}>
+        <div style={{ flex: 1 }}><SearchBox value={query} onChange={setQuery} placeholder="Пошук у журналі…" /></div>
+        {isAdmin && entries.length > 0 && (
+          <button onClick={clearAll} style={{ padding: '9px 14px', borderRadius: 8, border: `1px solid ${COLORS.danger}`, background: '#fff', color: COLORS.danger, fontSize: 13, cursor: 'pointer', marginBottom: 14 }}>
+            Очистити журнал
+          </button>
+        )}
+      </div>
       {filtered.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.muted, fontSize: 14 }}>Записів немає.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {filtered.map((e) => (
             <Card key={e.id}>
-              <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(e.createdAt)} · {nameFor(dir, e.author)}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(e.createdAt)} · {nameFor(dir, e.author)}</div>
+                {(e.author === user.email || isAdmin) && (
+                  <button onClick={() => deleteEntry(e.id)} style={{ border: 'none', background: 'none', color: COLORS.danger, cursor: 'pointer', fontSize: 16 }}>×</button>
+                )}
+              </div>
               <div style={{ fontSize: 14 }}>{e.text}</div>
             </Card>
           ))}
@@ -611,6 +681,7 @@ function SituationLogTab({ user }) {
 
 function NotesTab({ user }) {
   const dir = useDirectory();
+  const theme = useTheme();
   const [notes, setNotes] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [title, setTitle] = useState('');
@@ -661,7 +732,7 @@ function NotesTab({ user }) {
   return (
     <div>
       <button onClick={() => setShowForm((v) => !v)}
-        style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginBottom: 16 }}>
+        style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginBottom: 16 }}>
         {showForm ? 'Скасувати' : '+ Нова нотатка'}
       </button>
 
@@ -671,7 +742,7 @@ function NotesTab({ user }) {
             style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
           <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Текст, посилання, інформація…"
             style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, minHeight: 90, resize: 'vertical' }} />
-          <button onClick={addNote} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}>
+          <button onClick={addNote} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}>
             Зберегти
           </button>
         </Card>
@@ -703,6 +774,7 @@ function NotesTab({ user }) {
 
 function ShiftsTab({ user }) {
   const dir = useDirectory();
+  const theme = useTheme();
   const [shifts, setShifts] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [date, setDate] = useState(todayKey());
@@ -746,7 +818,7 @@ function ShiftsTab({ user }) {
         <div style={{ display: 'flex', gap: 8 }}>
           <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Примітка (необов'язково)"
             style={{ flex: 1, padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
-          <button onClick={addShift} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Додати</button>
+          <button onClick={addShift} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Додати</button>
         </div>
       </Card>
 
@@ -771,8 +843,9 @@ function ShiftsTab({ user }) {
   );
 }
 
-function ReportsTab({ user }) {
+function ReportsTab({ user, isAdmin }) {
   const dir = useDirectory();
+  const theme = useTheme();
   const [reports, setReports] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [summary, setSummary] = useState('');
@@ -791,6 +864,10 @@ function ReportsTab({ user }) {
     logAudit(user.email, 'Доповідь', t.slice(0, 60));
   }
 
+  async function deleteReport(id) {
+    await window.__db.collection('reports').doc(id).delete();
+  }
+
   if (!loaded) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
 
   return (
@@ -798,7 +875,7 @@ function ReportsTab({ user }) {
       <Card style={{ marginBottom: 20 }}>
         <textarea value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="Текст доповіді за зміну/добу…"
           style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, minHeight: 90, resize: 'vertical', marginBottom: 10, boxSizing: 'border-box' }} />
-        <button onClick={addReport} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Подати доповідь</button>
+        <button onClick={addReport} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Подати доповідь</button>
       </Card>
       {reports.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.muted, fontSize: 14 }}>Доповідей ще немає.</div>
@@ -806,7 +883,12 @@ function ReportsTab({ user }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {reports.map((r) => (
             <Card key={r.id}>
-              <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(r.createdAt)} · {nameFor(dir, r.author)}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(r.createdAt)} · {nameFor(dir, r.author)}</div>
+                {(r.author === user.email || isAdmin) && (
+                  <button onClick={() => deleteReport(r.id)} style={{ border: 'none', background: 'none', color: COLORS.danger, cursor: 'pointer', fontSize: 16 }}>×</button>
+                )}
+              </div>
               <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{r.summary}</div>
             </Card>
           ))}
@@ -899,6 +981,7 @@ function FilesTab({ user }) {
 function TasksTab({ user, isAdmin }) {
   const dir = useDirectory();
   const labels = useLabels();
+  const theme = useTheme();
   const [tasks, setTasks] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [title, setTitle] = useState('');
@@ -967,7 +1050,7 @@ function TasksTab({ user, isAdmin }) {
   return (
     <div>
       <button onClick={() => setShowForm((v) => !v)}
-        style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginBottom: 16 }}>
+        style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginBottom: 16 }}>
         {showForm ? 'Скасувати' : '+ Нове завдання'}
       </button>
 
@@ -981,7 +1064,7 @@ function TasksTab({ user, isAdmin }) {
             <label style={{ fontSize: 12, color: COLORS.muted }}>Термін:</label>
             <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)}
               style={{ padding: '7px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 13 }} />
-            <button onClick={createTask} style={{ marginLeft: 'auto', padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+            <button onClick={createTask} style={{ marginLeft: 'auto', padding: '9px 18px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
               Створити
             </button>
           </div>
@@ -1049,8 +1132,9 @@ function TasksTab({ user, isAdmin }) {
   );
 }
 
-function ChatTab({ user }) {
+function ChatTab({ user, isAdmin }) {
   const dir = useDirectory();
+  const theme = useTheme();
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const bottomRef = useRef(null);
@@ -1069,6 +1153,10 @@ function ChatTab({ user }) {
     await window.__db.collection('messages').add({ text: t, senderEmail: user.email, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
   }
 
+  async function deleteMessage(id) {
+    await window.__db.collection('messages').doc(id).delete();
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 500 }}>
       <div style={{ flex: 1, overflowY: 'auto', border: `1px solid ${COLORS.border}`, borderRadius: 10, background: COLORS.surface, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1077,8 +1165,13 @@ function ChatTab({ user }) {
           const mine = m.senderEmail === user.email;
           return (
             <div key={m.id} style={{ alignSelf: mine ? 'flex-end' : 'flex-start', maxWidth: '75%' }}>
-              <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 2, textAlign: mine ? 'right' : 'left' }}>{mine ? 'Ти' : nameFor(dir, m.senderEmail)} · {fmtTime(m.createdAt)}</div>
-              <div style={{ background: mine ? COLORS.taskLight : COLORS.bg, borderRadius: 10, padding: '8px 12px', fontSize: 14 }}>{m.text}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: mine ? 'flex-end' : 'flex-start' }}>
+                <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 2 }}>{mine ? 'Ти' : nameFor(dir, m.senderEmail)} · {fmtTime(m.createdAt)}</div>
+                {(mine || isAdmin) && (
+                  <button onClick={() => deleteMessage(m.id)} style={{ border: 'none', background: 'none', color: COLORS.muted, cursor: 'pointer', fontSize: 13, padding: 0 }}>×</button>
+                )}
+              </div>
+              <div style={{ background: mine ? theme.light : COLORS.bg, borderRadius: 10, padding: '8px 12px', fontSize: 14 }}>{m.text}</div>
             </div>
           );
         })}
@@ -1087,7 +1180,7 @@ function ChatTab({ user }) {
       <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
         <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder="Повідомлення…"
           style={{ flex: 1, padding: '10px 14px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
-        <button onClick={send} style={{ padding: '10px 18px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Надіслати</button>
+        <button onClick={send} style={{ padding: '10px 18px', borderRadius: 8, border: 'none', background: theme.accent, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Надіслати</button>
       </div>
     </div>
   );
@@ -1104,7 +1197,7 @@ function Board({ user, isAdmin }) {
       const map = {};
       snap.forEach((d) => {
         const data = d.data();
-        if (data.email) map[data.email] = { nickname: data.nickname, approved: !!data.approved };
+        if (data.email) map[data.email] = { nickname: data.nickname, approved: !!data.approved, themeAccent: data.themeAccent };
       });
       setDirectory(map);
     });
@@ -1117,6 +1210,9 @@ function Board({ user, isAdmin }) {
     });
     return unsub;
   }, []);
+
+  const myAccentHex = (directory[user.email] && directory[user.email].themeAccent) || DEFAULT_ACCENT.accent;
+  const theme = accentByHex(myAccentHex);
 
   const tabs = [
     { key: 'dashboard', label: 'Головна' },
@@ -1134,6 +1230,7 @@ function Board({ user, isAdmin }) {
   return (
     <UserDirectoryContext.Provider value={directory}>
       <LabelsContext.Provider value={labels}>
+        <ThemeContext.Provider value={theme}>
         <div style={{ background: COLORS.bg, minHeight: '100vh' }}>
           <div style={{ maxWidth: 920, margin: '0 auto', padding: '32px 20px 60px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
@@ -1155,7 +1252,7 @@ function Board({ user, isAdmin }) {
               {tabs.map((t) => (
                 <button key={t.key} onClick={() => setTab(t.key)} style={{
                   background: 'none', border: 'none',
-                  borderBottom: tab === t.key ? `2px solid ${COLORS.task}` : '2px solid transparent',
+                  borderBottom: tab === t.key ? `2px solid ${theme.accent}` : '2px solid transparent',
                   padding: '10px 2px', fontSize: 14, fontWeight: tab === t.key ? 600 : 400,
                   color: tab === t.key ? COLORS.ink : COLORS.muted, cursor: 'pointer', marginBottom: -1,
                 }}>{t.label}</button>
@@ -1163,17 +1260,18 @@ function Board({ user, isAdmin }) {
             </div>
 
             {tab === 'dashboard' && <DashboardTab user={user} isAdmin={isAdmin} />}
-            {tab === 'log' && <SituationLogTab user={user} />}
+            {tab === 'log' && <SituationLogTab user={user} isAdmin={isAdmin} />}
             {tab === 'tasks' && <TasksTab user={user} isAdmin={isAdmin} />}
             {tab === 'shifts' && <ShiftsTab user={user} />}
-            {tab === 'reports' && <ReportsTab user={user} />}
+            {tab === 'reports' && <ReportsTab user={user} isAdmin={isAdmin} />}
             {tab === 'notes' && <NotesTab user={user} />}
             {tab === 'files' && <FilesTab user={user} />}
-            {tab === 'chat' && <ChatTab user={user} />}
+            {tab === 'chat' && <ChatTab user={user} isAdmin={isAdmin} />}
             {tab === 'profile' && <ProfileTab user={user} />}
             {tab === 'admin' && isAdmin && <AdminTab />}
           </div>
         </div>
+        </ThemeContext.Provider>
       </LabelsContext.Provider>
     </UserDirectoryContext.Provider>
   );
