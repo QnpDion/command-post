@@ -51,10 +51,9 @@
 </script>
 
 <script type="text/babel">
-const { useState, useEffect, useCallback, useMemo, useRef } = React;
+const { useState, useEffect, useCallback, useMemo, useRef, useContext, createContext } = React;
 
 const ADMIN_EMAIL = 'npdionok@gmail.com';
-const APP_NAME = 'Командний пункт';
 
 const COLORS = {
   bg: '#F3F1EC', surface: '#FFFFFF', ink: '#22303C', muted: '#6B7280',
@@ -63,7 +62,7 @@ const COLORS = {
   info: '#3B6EA5', infoLight: '#E4EDF6',
 };
 
-const STATUS_LABEL = { new: 'Нове', in_progress: 'В роботі', done: 'Виконано' };
+const DEFAULT_LABELS = { new: 'Нові', in_progress: 'В роботі', done: 'Виконано', appTitle: 'Командний пункт' };
 const STATUS_COLOR = {
   new: { bg: COLORS.infoLight, fg: COLORS.info },
   in_progress: { bg: COLORS.goldLight, fg: COLORS.gold },
@@ -97,6 +96,20 @@ async function logAudit(actor, action, summary) {
   } catch (err) {}
 }
 
+const UserDirectoryContext = createContext({});
+function nameFor(dir, email) {
+  if (!email) return '—';
+  return (dir && dir[email] && dir[email].nickname) || email;
+}
+function useDirectory() {
+  return useContext(UserDirectoryContext);
+}
+
+const LabelsContext = createContext(DEFAULT_LABELS);
+function useLabels() {
+  return useContext(LabelsContext);
+}
+
 function authErrorMessage(code) {
   const map = {
     'auth/invalid-email': 'Некоректна адреса пошти.',
@@ -106,7 +119,6 @@ function authErrorMessage(code) {
     'auth/email-already-in-use': 'Ця пошта вже зареєстрована. Спробуй увійти.',
     'auth/weak-password': 'Пароль має містити щонайменше 6 символів.',
     'auth/too-many-requests': 'Забагато спроб. Спробуй трохи пізніше.',
-    'auth/invalid-verification-code': 'Невірний код. Перевір застосунок і спробуй ще раз.',
   };
   return map[code] || 'Щось пішло не так. Спробуй ще раз.';
 }
@@ -117,9 +129,6 @@ function LoginScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-
-  const [mfaResolver, setMfaResolver] = useState(null);
-  const [mfaCode, setMfaCode] = useState('');
 
   async function submit() {
     setError('');
@@ -132,55 +141,10 @@ function LoginScreen() {
         await window.__auth.createUserWithEmailAndPassword(email.trim(), password);
       }
     } catch (err) {
-      if (err.code === 'auth/multi-factor-auth-required') {
-        setMfaResolver(err.resolver);
-      } else {
-        setError(authErrorMessage(err.code));
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitMfaCode() {
-    setError('');
-    if (!/^\d{6}$/.test(mfaCode.trim())) { setError('Введи 6-значний код.'); return; }
-    setBusy(true);
-    try {
-      const hint = mfaResolver.hints[0];
-      const assertion = firebase.auth.TotpMultiFactorGenerator.assertionForSignIn(hint.uid, mfaCode.trim());
-      await mfaResolver.resolveSignIn(assertion);
-    } catch (err) {
       setError(authErrorMessage(err.code));
     } finally {
       setBusy(false);
     }
-  }
-
-  if (mfaResolver) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: COLORS.bg }}>
-        <div style={{ width: 320, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 28 }}>
-          <h1 className="org-title" style={{ fontSize: 20, fontWeight: 600, margin: '0 0 4px' }}>Код підтвердження</h1>
-          <p style={{ fontSize: 13, color: COLORS.muted, margin: '0 0 20px' }}>Відкрий Google Authenticator і введи поточний код</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              onKeyDown={(e) => e.key === 'Enter' && submitMfaCode()}
-              placeholder="123456" inputMode="numeric"
-              style={{ padding: '10px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 20, letterSpacing: 4, textAlign: 'center' }} />
-            {error && <div style={{ fontSize: 13, color: COLORS.danger }}>{error}</div>}
-            <button onClick={submitMfaCode} disabled={busy}
-              style={{ padding: '10px 12px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1 }}>
-              {busy ? 'Перевірка…' : 'Підтвердити'}
-            </button>
-            <button onClick={() => { setMfaResolver(null); setMfaCode(''); setError(''); }}
-              style={{ border: 'none', background: 'none', color: COLORS.muted, fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>
-              Назад
-            </button>
-          </div>
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -261,94 +225,79 @@ function SearchBox({ value, onChange, placeholder }) {
   );
 }
 
-function SecuritySetup({ onDone }) {
-  const [step, setStep] = useState('start');
-  const [secret, setSecret] = useState(null);
-  const [qrUrl, setQrUrl] = useState('');
-  const [code, setCode] = useState('');
+function ProfileTab({ user }) {
+  const [nickname, setNickname] = useState('');
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
-  async function startEnrollment() {
+  useEffect(() => {
+    window.__db.collection('users').doc(user.uid).get().then((snap) => {
+      if (snap.exists) setNickname(snap.data().nickname || '');
+      setLoaded(true);
+    });
+  }, [user.uid]);
+
+  async function save() {
     setError('');
-    setBusy(true);
+    const nick = nickname.trim();
+    if (!nick) { setError("Введи ім'я."); return; }
     try {
-      const user = window.__auth.currentUser;
-      const mfSession = await firebase.auth.multiFactor(user).getSession();
-      const totpSecret = await firebase.auth.TotpMultiFactorGenerator.generateSecret(mfSession);
-      const otpauthUrl = totpSecret.generateQrCodeUrl(user.email, APP_NAME);
-      setSecret(totpSecret);
-      setQrUrl(`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(otpauthUrl)}`);
-      setStep('scan');
+      await window.__db.collection('users').doc(user.uid).set({ nickname: nick }, { merge: true });
+      logAudit(user.email, 'Профіль', `Змінено ім'я на "${nick}"`);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
     } catch (err) {
-      if (err.code === 'auth/requires-recent-login') {
-        setError('Потрібно увійти заново для налаштування безпеки. Вийди і зайди ще раз, тоді спробуй знову.');
-      } else {
-        setError('Не вдалося почати налаштування. Спробуй ще раз.');
-      }
-    } finally {
-      setBusy(false);
+      setError('Не вдалося зберегти.');
     }
   }
 
-  async function confirmEnrollment() {
-    setError('');
-    if (!/^\d{6}$/.test(code.trim())) { setError('Введи 6-значний код.'); return; }
-    setBusy(true);
-    try {
-      const user = window.__auth.currentUser;
-      const assertion = firebase.auth.TotpMultiFactorGenerator.assertionForEnrollment(secret, code.trim());
-      await firebase.auth.multiFactor(user).enroll(assertion, 'TOTP');
-      logAudit(user.email, 'Безпека', 'Увімкнено двофакторний захист (TOTP)');
-      setStep('done');
-    } catch (err) {
-      setError(authErrorMessage(err.code));
-    } finally {
-      setBusy(false);
-    }
-  }
+  if (!loaded) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
 
   return (
-    <Card style={{ marginBottom: 24, borderColor: COLORS.gold }}>
-      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Двофакторний захист акаунту</div>
-      {step === 'start' && (
-        <div>
-          <p style={{ fontSize: 13, color: COLORS.muted, marginBottom: 12 }}>
-            Додай Google Authenticator для додаткового захисту входу. Знадобиться телефон із застосунком Google Authenticator.
-          </p>
-          {error && <div style={{ fontSize: 13, color: COLORS.danger, marginBottom: 10 }}>{error}</div>}
-          <button onClick={startEnrollment} disabled={busy}
-            style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-            {busy ? 'Зачекай…' : 'Почати налаштування'}
-          </button>
-        </div>
-      )}
-      {step === 'scan' && (
-        <div>
-          <p style={{ fontSize: 13, color: COLORS.muted, marginBottom: 10 }}>
-            Відкрий Google Authenticator → "+" → "Сканувати QR-код" і наведи на зображення нижче.
-          </p>
-          <img src={qrUrl} alt="QR-код для Google Authenticator" style={{ display: 'block', marginBottom: 12 }} />
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              placeholder="Код із застосунку" inputMode="numeric"
-              style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 16, letterSpacing: 2, width: 160 }} />
-            <button onClick={confirmEnrollment} disabled={busy}
-              style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-              {busy ? 'Перевірка…' : 'Підтвердити'}
-            </button>
-          </div>
-          {error && <div style={{ fontSize: 13, color: COLORS.danger }}>{error}</div>}
-        </div>
-      )}
-      {step === 'done' && (
-        <div>
-          <p style={{ fontSize: 13, color: COLORS.task, marginBottom: 10 }}>Готово! Двофакторний захист увімкнено.</p>
-          <button onClick={onDone} style={{ padding: '9px 16px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 13, cursor: 'pointer' }}>Закрити</button>
-        </div>
-      )}
+    <Card style={{ maxWidth: 400 }}>
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Особистий кабінет</div>
+      <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 16 }}>Пошта для входу: {user.email}</div>
+      <label style={{ fontSize: 12, color: COLORS.muted, display: 'block', marginBottom: 4 }}>
+        Ім'я, яке бачитимуть інші учасники
+      </label>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input value={nickname} onChange={(e) => setNickname(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && save()}
+          placeholder="Наприклад: Олег К."
+          style={{ flex: 1, padding: '9px 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
+        <button onClick={save} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+          Зберегти
+        </button>
+      </div>
+      {saved && <div style={{ fontSize: 13, color: COLORS.task, marginTop: 8 }}>Збережено.</div>}
+      {error && <div style={{ fontSize: 13, color: COLORS.danger, marginTop: 8 }}>{error}</div>}
     </Card>
   );
+}
+
+async function exportBackup() {
+  const collections = ['tasks', 'messages', 'situationLog', 'shifts', 'reports', 'notes', 'users', 'auditLog'];
+  const data = {};
+  for (const name of collections) {
+    const snap = await window.__db.collection(name).get();
+    data[name] = snap.docs.map((d) => {
+      const obj = { id: d.id, ...d.data() };
+      Object.keys(obj).forEach((k) => {
+        if (obj[k] && typeof obj[k].toDate === 'function') obj[k] = obj[k].toDate().toISOString();
+      });
+      return obj;
+    });
+  }
+  data.exportedAt = new Date().toISOString();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `backup-${todayKey()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function AdminTab() {
@@ -398,7 +347,7 @@ function AdminTab() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {users.map((u) => (
             <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8 }}>
-              <span style={{ flex: 1, fontSize: 14 }}>{u.email || u.id}</span>
+              <span style={{ flex: 1, fontSize: 14 }}>{u.nickname ? `${u.nickname} (${u.email})` : u.email || u.id}</span>
               <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: u.approved ? COLORS.taskLight : COLORS.dangerLight, color: u.approved ? COLORS.task : COLORS.danger }}>
                 {u.approved ? 'Підтверджено' : 'Очікує'}
               </span>
@@ -419,32 +368,8 @@ function AdminTab() {
   );
 }
 
-async function exportBackup() {
-  const collections = ['tasks', 'messages', 'situationLog', 'shifts', 'reports', 'users', 'auditLog'];
-  const data = {};
-  for (const name of collections) {
-    const snap = await window.__db.collection(name).get();
-    data[name] = snap.docs.map((d) => {
-      const obj = { id: d.id, ...d.data() };
-      Object.keys(obj).forEach((k) => {
-        if (obj[k] && typeof obj[k].toDate === 'function') obj[k] = obj[k].toDate().toISOString();
-      });
-      return obj;
-    });
-  }
-  data.exportedAt = new Date().toISOString();
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `backup-${todayKey()}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
 function AuditLogList() {
+  const dir = useDirectory();
   const [entries, setEntries] = useState(null);
   useEffect(() => {
     const unsub = window.__db.collection('auditLog').orderBy('createdAt', 'desc').limit(100)
@@ -457,19 +382,83 @@ function AuditLogList() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 400, overflowY: 'auto' }}>
       {entries.map((e) => (
         <div key={e.id} style={{ fontSize: 12, color: COLORS.muted, padding: '6px 10px', borderBottom: `1px solid ${COLORS.border}` }}>
-          <span style={{ color: COLORS.ink }}>{fmtTime(e.createdAt)}</span> · {e.actor} · {e.action} — {e.summary}
+          <span style={{ color: COLORS.ink }}>{fmtTime(e.createdAt)}</span> · {nameFor(dir, e.actor)} · {e.action} — {e.summary}
         </div>
       ))}
     </div>
   );
 }
 
-function DashboardTab({ user }) {
+function EditableLabel({ value, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => { setDraft(value); }, [value]);
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { onSave(draft.trim() || value); setEditing(false); }
+          if (e.key === 'Escape') { setDraft(value); setEditing(false); }
+        }}
+        onBlur={() => { onSave(draft.trim() || value); setEditing(false); }}
+        style={{ fontSize: 11, color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 4, padding: '2px 4px', width: '100%' }}
+      />
+    );
+  }
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+      style={{ fontSize: 11, color: COLORS.muted, cursor: 'text' }}
+      title="Клікни, щоб перейменувати"
+    >
+      {value} ✎
+    </div>
+  );
+}
+
+function EditableTitle({ value, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => { setDraft(value); }, [value]);
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { onSave(draft.trim() || value); setEditing(false); }
+          if (e.key === 'Escape') { setDraft(value); setEditing(false); }
+        }}
+        onBlur={() => { onSave(draft.trim() || value); setEditing(false); }}
+        className="org-title"
+        style={{ fontSize: 26, fontWeight: 600, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '2px 8px', background: COLORS.surface, color: COLORS.ink }}
+      />
+    );
+  }
+  return (
+    <h1 className="org-title" onClick={() => setEditing(true)} title="Клікни, щоб перейменувати"
+      style={{ fontSize: 26, fontWeight: 600, margin: 0, cursor: 'text' }}>
+      {value} <span style={{ fontSize: 14, color: COLORS.muted }}>✎</span>
+    </h1>
+  );
+}
+
+function DashboardTab({ user, isAdmin }) {
+  const dir = useDirectory();
+  const labels = useLabels();
   const [tasks, setTasks] = useState([]);
   const [logEntries, setLogEntries] = useState([]);
   const [shifts, setShifts] = useState([]);
-  const [showSecurity, setShowSecurity] = useState(false);
-  const [hasMfa, setHasMfa] = useState(true);
+  const [expanded, setExpanded] = useState(null);
 
   useEffect(() => {
     const u1 = window.__db.collection('tasks').onSnapshot((s) => setTasks(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
@@ -480,36 +469,64 @@ function DashboardTab({ user }) {
     return () => { u1(); u2(); u3(); };
   }, []);
 
-  useEffect(() => {
-    const u = window.__auth.currentUser;
-    if (u) setHasMfa((u.multiFactor && u.multiFactor.enrolledFactors && u.multiFactor.enrolledFactors.length > 0));
-  }, []);
-
   const counts = useMemo(() => {
-    const c = { new: 0, in_progress: 0, done: 0, overdue: 0 };
-    tasks.forEach((t) => {
-      c[t.status] = (c[t.status] || 0) + 1;
-      if (isOverdue(t)) c.overdue += 1;
-    });
+    const c = { new: 0, in_progress: 0, done: 0 };
+    tasks.forEach((t) => { c[t.status] = (c[t.status] || 0) + 1; });
     return c;
   }, [tasks]);
 
+  const boxes = [
+    { key: 'new', color: COLORS.info },
+    { key: 'in_progress', color: COLORS.gold },
+    { key: 'done', color: COLORS.task },
+  ];
+
+  async function saveLabel(key, value) {
+    try {
+      await window.__db.collection('config').doc('labels').set({ [key]: value }, { merge: true });
+      logAudit(user.email, 'Налаштування', `Перейменовано статус "${key}" на "${value}"`);
+    } catch (err) {}
+  }
+
+  const expandedTasks = useMemo(() => tasks.filter((t) => t.status === expanded), [tasks, expanded]);
+
   return (
     <div>
-      {!hasMfa && !showSecurity && (
-        <Card style={{ marginBottom: 20, borderColor: COLORS.gold, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <span style={{ fontSize: 13 }}>Акаунт ще без двофакторного захисту.</span>
-          <button onClick={() => setShowSecurity(true)} style={{ padding: '7px 14px', borderRadius: 6, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Налаштувати</button>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
+        {boxes.map((b) => (
+          <div key={b.key} onClick={() => setExpanded(expanded === b.key ? null : b.key)}
+            style={{ textAlign: 'left', cursor: 'pointer', border: expanded === b.key ? `2px solid ${b.color}` : `1px solid ${COLORS.border}`, background: COLORS.surface, borderRadius: 10, padding: '12px 14px' }}>
+            {isAdmin ? (
+              <EditableLabel value={labels[b.key]} onSave={(v) => saveLabel(b.key, v)} />
+            ) : (
+              <div style={{ fontSize: 11, color: COLORS.muted }}>{labels[b.key]}</div>
+            )}
+            <div style={{ fontSize: 22, fontWeight: 600, color: b.color }}>{counts[b.key] || 0}</div>
+          </div>
+        ))}
+      </div>
+
+      {expanded && (
+        <Card style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 10 }}>
+            {labels[expanded]}
+          </div>
+          {expandedTasks.length === 0 ? (
+            <div style={{ fontSize: 13, color: COLORS.muted }}>Немає завдань у цьому статусі.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {expandedTasks.map((t) => (
+                <div key={t.id} style={{ fontSize: 13, padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontWeight: 600, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.status === 'done' ? COLORS.muted : COLORS.ink }}>{t.title}</div>
+                  <div style={{ color: COLORS.muted, fontSize: 12 }}>
+                    {t.claimedBy ? `Виконує: ${nameFor(dir, t.claimedBy)}` : 'Ще ніхто не взяв'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </Card>
       )}
-      {showSecurity && <SecuritySetup onDone={() => { setShowSecurity(false); setHasMfa(true); }} />}
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 24 }}>
-        <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>Нові</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.info }}>{counts.new || 0}</div></Card>
-        <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>В роботі</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.gold }}>{counts.in_progress || 0}</div></Card>
-        <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>Виконано</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.task }}>{counts.done || 0}</div></Card>
-        <Card style={{ padding: '12px 14px' }}><div style={{ fontSize: 11, color: COLORS.muted }}>Прострочено</div><div style={{ fontSize: 22, fontWeight: 600, color: COLORS.danger }}>{counts.overdue || 0}</div></Card>
-      </div>
 
       <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 10 }}>Сьогоднішня зміна</div>
       {shifts.length === 0 ? (
@@ -517,7 +534,7 @@ function DashboardTab({ user }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 24 }}>
           {shifts.map((s) => (
-            <Card key={s.id} style={{ padding: '10px 14px', fontSize: 13 }}>{s.timeRange} — {s.assignedTo}{s.note ? ` (${s.note})` : ''}</Card>
+            <Card key={s.id} style={{ padding: '10px 14px', fontSize: 13 }}>{s.timeRange} — {nameFor(dir, s.assignedTo)}{s.note ? ` (${s.note})` : ''}</Card>
           ))}
         </div>
       )}
@@ -529,7 +546,7 @@ function DashboardTab({ user }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {logEntries.map((e) => (
             <Card key={e.id} style={{ padding: '10px 14px', fontSize: 13 }}>
-              <div style={{ color: COLORS.muted, fontSize: 11, marginBottom: 2 }}>{fmtTime(e.createdAt)} · {e.author}</div>
+              <div style={{ color: COLORS.muted, fontSize: 11, marginBottom: 2 }}>{fmtTime(e.createdAt)} · {nameFor(dir, e.author)}</div>
               {e.text}
             </Card>
           ))}
@@ -540,6 +557,7 @@ function DashboardTab({ user }) {
 }
 
 function SituationLogTab({ user }) {
+  const dir = useDirectory();
   const [entries, setEntries] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [text, setText] = useState('');
@@ -581,7 +599,7 @@ function SituationLogTab({ user }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {filtered.map((e) => (
             <Card key={e.id}>
-              <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(e.createdAt)} · {e.author}</div>
+              <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(e.createdAt)} · {nameFor(dir, e.author)}</div>
               <div style={{ fontSize: 14 }}>{e.text}</div>
             </Card>
           ))}
@@ -591,7 +609,100 @@ function SituationLogTab({ user }) {
   );
 }
 
+function NotesTab({ user }) {
+  const dir = useDirectory();
+  const [notes, setNotes] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    const unsub = window.__db.collection('notes').orderBy('createdAt', 'desc')
+      .onSnapshot((snap) => { setNotes(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoaded(true); }, () => setLoaded(true));
+    return unsub;
+  }, []);
+
+  async function addNote() {
+    const t = title.trim();
+    const c = content.trim();
+    if (!t && !c) return;
+    await window.__db.collection('notes').add({
+      title: t || 'Без назви', content: c, author: user.email, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    logAudit(user.email, 'Нотатка', t || c.slice(0, 40));
+    setTitle(''); setContent(''); setShowForm(false);
+  }
+
+  async function deleteNote(id) {
+    await window.__db.collection('notes').doc(id).delete();
+  }
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return notes;
+    const q = query.toLowerCase();
+    return notes.filter((n) => (n.title || '').toLowerCase().includes(q) || (n.content || '').toLowerCase().includes(q));
+  }, [notes, query]);
+
+  function linkify(text) {
+    const parts = text.split(/(https?:\/\/[^\s]+)/g);
+    return parts.map((part, i) =>
+      /^https?:\/\//.test(part) ? (
+        <a key={i} href={part} target="_blank" rel="noreferrer" style={{ color: COLORS.info }}>{part}</a>
+      ) : (
+        part
+      )
+    );
+  }
+
+  if (!loaded) return <div style={{ color: COLORS.muted, fontSize: 14 }}>Завантаження…</div>;
+
+  return (
+    <div>
+      <button onClick={() => setShowForm((v) => !v)}
+        style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: COLORS.task, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', marginBottom: 16 }}>
+        {showForm ? 'Скасувати' : '+ Нова нотатка'}
+      </button>
+
+      {showForm && (
+        <Card style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Назва (напр. Контакти постачальника)"
+            style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14 }} />
+          <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Текст, посилання, інформація…"
+            style={{ padding: '9px 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 14, minHeight: 90, resize: 'vertical' }} />
+          <button onClick={addNote} style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: COLORS.gold, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}>
+            Зберегти
+          </button>
+        </Card>
+      )}
+
+      <SearchBox value={query} onChange={setQuery} placeholder="Пошук нотаток…" />
+
+      {filtered.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '30px 0', color: COLORS.muted, fontSize: 14 }}>Нотаток ще немає.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {filtered.map((n) => (
+            <Card key={n.id}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>{n.title}</div>
+                {(n.author === user.email || user.email === ADMIN_EMAIL) && (
+                  <button onClick={() => deleteNote(n.id)} style={{ border: 'none', background: 'none', color: COLORS.danger, cursor: 'pointer', fontSize: 16 }}>×</button>
+                )}
+              </div>
+              <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', marginBottom: 6 }}>{linkify(n.content)}</div>
+              <div style={{ fontSize: 11, color: COLORS.muted }}>{nameFor(dir, n.author)} · {fmtTime(n.createdAt)}</div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ShiftsTab({ user }) {
+  const dir = useDirectory();
   const [shifts, setShifts] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [date, setDate] = useState(todayKey());
@@ -647,7 +758,7 @@ function ShiftsTab({ user }) {
             <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', background: s.date === todayKey() ? COLORS.taskLight : COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 13, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 600, minWidth: 90 }}>{s.date}</span>
               <span>{s.timeRange}</span>
-              <span style={{ color: COLORS.muted }}>{s.assignedTo}</span>
+              <span style={{ color: COLORS.muted }}>{nameFor(dir, s.assignedTo)}</span>
               {s.note && <span style={{ color: COLORS.muted, flex: 1 }}>{s.note}</span>}
               {(s.createdBy === user.email || user.email === ADMIN_EMAIL) && (
                 <button onClick={() => deleteShift(s.id)} style={{ border: 'none', background: 'none', color: COLORS.danger, cursor: 'pointer', fontSize: 16 }}>×</button>
@@ -661,6 +772,7 @@ function ShiftsTab({ user }) {
 }
 
 function ReportsTab({ user }) {
+  const dir = useDirectory();
   const [reports, setReports] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [summary, setSummary] = useState('');
@@ -694,7 +806,7 @@ function ReportsTab({ user }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {reports.map((r) => (
             <Card key={r.id}>
-              <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(r.createdAt)} · {r.author}</div>
+              <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>{fmtTime(r.createdAt)} · {nameFor(dir, r.author)}</div>
               <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{r.summary}</div>
             </Card>
           ))}
@@ -705,6 +817,7 @@ function ReportsTab({ user }) {
 }
 
 function FilesTab({ user }) {
+  const dir = useDirectory();
   const [files, setFiles] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
@@ -770,7 +883,7 @@ function FilesTab({ user }) {
             <div key={f.fullPath} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 13, flexWrap: 'wrap' }}>
               <a href={f.url} target="_blank" rel="noreferrer" style={{ color: COLORS.info, fontWeight: 600, textDecoration: 'none' }}>{f.name}</a>
               <span style={{ color: COLORS.muted }}>{fmtSize(f.size)}</span>
-              <span style={{ color: COLORS.muted }}>{f.uploader}</span>
+              <span style={{ color: COLORS.muted }}>{nameFor(dir, f.uploader)}</span>
               <span style={{ color: COLORS.muted, marginLeft: 'auto' }}>{new Date(f.timeCreated).toLocaleDateString('uk-UA')}</span>
               {(f.uploader === user.email || user.email === ADMIN_EMAIL) && (
                 <button onClick={() => handleDelete(f)} style={{ border: 'none', background: 'none', color: COLORS.danger, cursor: 'pointer', fontSize: 16 }}>×</button>
@@ -783,7 +896,9 @@ function FilesTab({ user }) {
   );
 }
 
-function TasksTab({ user }) {
+function TasksTab({ user, isAdmin }) {
+  const dir = useDirectory();
+  const labels = useLabels();
   const [tasks, setTasks] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [title, setTitle] = useState('');
@@ -791,12 +906,19 @@ function TasksTab({ user }) {
   const [dueDate, setDueDate] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState('');
+  const [assigningId, setAssigningId] = useState(null);
+  const [assignTarget, setAssignTarget] = useState('');
 
   useEffect(() => {
     const unsub = window.__db.collection('tasks').orderBy('createdAt', 'desc')
       .onSnapshot((snap) => { setTasks(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoaded(true); }, () => setLoaded(true));
     return unsub;
   }, []);
+
+  const approvedUsers = useMemo(
+    () => Object.entries(dir).filter(([, v]) => v.approved).map(([email, v]) => ({ email, nickname: v.nickname })),
+    [dir]
+  );
 
   async function createTask() {
     const t = title.trim();
@@ -813,6 +935,13 @@ function TasksTab({ user }) {
   async function claimTask(task) {
     await window.__db.collection('tasks').doc(task.id).set({ status: 'in_progress', claimedBy: user.email, claimedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
     logAudit(user.email, 'Взято завдання', task.title);
+  }
+  async function assignTask(task, targetEmail) {
+    if (!targetEmail) return;
+    await window.__db.collection('tasks').doc(task.id).set({ status: 'in_progress', claimedBy: targetEmail, claimedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    logAudit(user.email, 'Призначено завдання', `${task.title} → ${nameFor(dir, targetEmail)}`);
+    setAssigningId(null);
+    setAssignTarget('');
   }
   async function completeTask(task) {
     await window.__db.collection('tasks').doc(task.id).set({ status: 'done', completedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
@@ -869,28 +998,47 @@ function TasksTab({ user }) {
             const sc = STATUS_COLOR[t.status] || STATUS_COLOR.new;
             const mine = t.claimedBy === user.email;
             const overdue = isOverdue(t);
+            const done = t.status === 'done';
             return (
-              <Card key={t.id} style={overdue ? { borderColor: COLORS.danger } : undefined}>
+              <Card key={t.id} style={overdue && !done ? { borderColor: COLORS.danger } : undefined}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>{t.title}</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, textDecoration: done ? 'line-through' : 'none', color: done ? COLORS.muted : COLORS.ink }}>{t.title}</div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    {overdue && <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: COLORS.dangerLight, color: COLORS.danger }}>Прострочено</span>}
-                    <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: sc.bg, color: sc.fg, whiteSpace: 'nowrap' }}>{STATUS_LABEL[t.status] || t.status}</span>
+                    {overdue && !done && <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: COLORS.dangerLight, color: COLORS.danger }}>Прострочено</span>}
+                    <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: sc.bg, color: sc.fg, whiteSpace: 'nowrap' }}>{labels[t.status] || t.status}</span>
                   </div>
                 </div>
-                {t.description && <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 8 }}>{t.description}</div>}
+                {t.description && <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 8, textDecoration: done ? 'line-through' : 'none' }}>{t.description}</div>}
                 <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                  <span>Створив: {t.createdBy}</span>
+                  <span>Створив: {nameFor(dir, t.createdBy)}</span>
                   <span>Створено: {fmtTime(t.createdAt)}</span>
-                  {t.claimedBy && <span>Взяв: {t.claimedBy} ({fmtTime(t.claimedAt)})</span>}
+                  {t.claimedBy && <span>Виконує: {nameFor(dir, t.claimedBy)} ({fmtTime(t.claimedAt)})</span>}
                   {t.completedAt && <span>Виконано: {fmtTime(t.completedAt)}</span>}
                   {t.dueDate && <span>Термін: {t.dueDate}</span>}
                 </div>
+
+                {assigningId === t.id && (
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                    <select value={assignTarget} onChange={(e) => setAssignTarget(e.target.value)}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: `1px solid ${COLORS.border}`, fontSize: 12 }}>
+                      <option value="">Обери людину…</option>
+                      {approvedUsers.map((u) => (
+                        <option key={u.email} value={u.email}>{u.nickname || u.email}</option>
+                      ))}
+                    </select>
+                    <button onClick={() => assignTask(t, assignTarget)} style={{ padding: '6px 12px', borderRadius: 6, border: 'none', background: COLORS.task, color: '#fff', fontSize: 12, cursor: 'pointer' }}>Призначити</button>
+                    <button onClick={() => setAssigningId(null)} style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Скасувати</button>
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {t.status === 'new' && <button onClick={() => claimTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: COLORS.info, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Взяти в роботу</button>}
+                  {t.status === 'new' && isAdmin && assigningId !== t.id && (
+                    <button onClick={() => { setAssigningId(t.id); setAssignTarget(''); }} style={{ padding: '6px 14px', borderRadius: 6, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Призначити…</button>
+                  )}
                   {t.status === 'in_progress' && mine && <button onClick={() => completeTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: COLORS.task, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Позначити виконаним</button>}
-                  {t.status !== 'new' && (mine || user.email === ADMIN_EMAIL) && <button onClick={() => reopenTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Повернути</button>}
-                  {(t.createdBy === user.email || user.email === ADMIN_EMAIL) && <button onClick={() => deleteTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'none', color: COLORS.danger, fontSize: 12, cursor: 'pointer' }}>Видалити</button>}
+                  {t.status !== 'new' && (mine || isAdmin) && <button onClick={() => reopenTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Повернути</button>}
+                  {(t.createdBy === user.email || isAdmin) && <button onClick={() => deleteTask(t)} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'none', color: COLORS.danger, fontSize: 12, cursor: 'pointer' }}>Видалити</button>}
                 </div>
               </Card>
             );
@@ -902,6 +1050,7 @@ function TasksTab({ user }) {
 }
 
 function ChatTab({ user }) {
+  const dir = useDirectory();
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const bottomRef = useRef(null);
@@ -928,7 +1077,7 @@ function ChatTab({ user }) {
           const mine = m.senderEmail === user.email;
           return (
             <div key={m.id} style={{ alignSelf: mine ? 'flex-end' : 'flex-start', maxWidth: '75%' }}>
-              <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 2, textAlign: mine ? 'right' : 'left' }}>{mine ? 'Ти' : m.senderEmail} · {fmtTime(m.createdAt)}</div>
+              <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 2, textAlign: mine ? 'right' : 'left' }}>{mine ? 'Ти' : nameFor(dir, m.senderEmail)} · {fmtTime(m.createdAt)}</div>
               <div style={{ background: mine ? COLORS.taskLight : COLORS.bg, borderRadius: 10, padding: '8px 12px', fontSize: 14 }}>{m.text}</div>
             </div>
           );
@@ -946,7 +1095,28 @@ function ChatTab({ user }) {
 
 function Board({ user, isAdmin }) {
   const [tab, setTab] = useState('dashboard');
+  const [directory, setDirectory] = useState({});
+  const [labels, setLabels] = useState(DEFAULT_LABELS);
   useNotificationSetup(user, true);
+
+  useEffect(() => {
+    const unsub = window.__db.collection('users').onSnapshot((snap) => {
+      const map = {};
+      snap.forEach((d) => {
+        const data = d.data();
+        if (data.email) map[data.email] = { nickname: data.nickname, approved: !!data.approved };
+      });
+      setDirectory(map);
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = window.__db.collection('config').doc('labels').onSnapshot((snap) => {
+      if (snap.exists) setLabels({ ...DEFAULT_LABELS, ...snap.data() });
+    });
+    return unsub;
+  }, []);
 
   const tabs = [
     { key: 'dashboard', label: 'Головна' },
@@ -954,43 +1124,58 @@ function Board({ user, isAdmin }) {
     { key: 'tasks', label: 'Завдання' },
     { key: 'shifts', label: 'Зміни' },
     { key: 'reports', label: 'Доповіді' },
+    { key: 'notes', label: 'Нотатки' },
     { key: 'files', label: 'Файли' },
     { key: 'chat', label: 'Чат' },
+    { key: 'profile', label: 'Профіль' },
   ];
   if (isAdmin) tabs.push({ key: 'admin', label: 'Учасники' });
 
   return (
-    <div style={{ background: COLORS.bg, minHeight: '100vh' }}>
-      <div style={{ maxWidth: 920, margin: '0 auto', padding: '32px 20px 60px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
-          <h1 className="org-title" style={{ fontSize: 26, fontWeight: 600, margin: 0 }}>Командний пункт</h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span style={{ fontSize: 13, color: COLORS.muted }}>{user.email}</span>
-            <button onClick={() => window.__auth.signOut()} style={{ border: 'none', background: 'none', color: COLORS.muted, fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>Вийти</button>
+    <UserDirectoryContext.Provider value={directory}>
+      <LabelsContext.Provider value={labels}>
+        <div style={{ background: COLORS.bg, minHeight: '100vh' }}>
+          <div style={{ maxWidth: 920, margin: '0 auto', padding: '32px 20px 60px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+              {isAdmin ? (
+                <EditableTitle value={labels.appTitle} onSave={async (v) => {
+                  await window.__db.collection('config').doc('labels').set({ appTitle: v }, { merge: true });
+                  logAudit(user.email, 'Налаштування', `Перейменовано застосунок на "${v}"`);
+                }} />
+              ) : (
+                <h1 className="org-title" style={{ fontSize: 26, fontWeight: 600, margin: 0 }}>{labels.appTitle}</h1>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: 13, color: COLORS.muted }}>{nameFor(directory, user.email)}</span>
+                <button onClick={() => window.__auth.signOut()} style={{ border: 'none', background: 'none', color: COLORS.muted, fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}>Вийти</button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 18, borderBottom: `1px solid ${COLORS.border}`, marginTop: 20, marginBottom: 28, flexWrap: 'wrap' }}>
+              {tabs.map((t) => (
+                <button key={t.key} onClick={() => setTab(t.key)} style={{
+                  background: 'none', border: 'none',
+                  borderBottom: tab === t.key ? `2px solid ${COLORS.task}` : '2px solid transparent',
+                  padding: '10px 2px', fontSize: 14, fontWeight: tab === t.key ? 600 : 400,
+                  color: tab === t.key ? COLORS.ink : COLORS.muted, cursor: 'pointer', marginBottom: -1,
+                }}>{t.label}</button>
+              ))}
+            </div>
+
+            {tab === 'dashboard' && <DashboardTab user={user} isAdmin={isAdmin} />}
+            {tab === 'log' && <SituationLogTab user={user} />}
+            {tab === 'tasks' && <TasksTab user={user} isAdmin={isAdmin} />}
+            {tab === 'shifts' && <ShiftsTab user={user} />}
+            {tab === 'reports' && <ReportsTab user={user} />}
+            {tab === 'notes' && <NotesTab user={user} />}
+            {tab === 'files' && <FilesTab user={user} />}
+            {tab === 'chat' && <ChatTab user={user} />}
+            {tab === 'profile' && <ProfileTab user={user} />}
+            {tab === 'admin' && isAdmin && <AdminTab />}
           </div>
         </div>
-
-        <div style={{ display: 'flex', gap: 18, borderBottom: `1px solid ${COLORS.border}`, marginTop: 20, marginBottom: 28, flexWrap: 'wrap' }}>
-          {tabs.map((t) => (
-            <button key={t.key} onClick={() => setTab(t.key)} style={{
-              background: 'none', border: 'none',
-              borderBottom: tab === t.key ? `2px solid ${COLORS.task}` : '2px solid transparent',
-              padding: '10px 2px', fontSize: 14, fontWeight: tab === t.key ? 600 : 400,
-              color: tab === t.key ? COLORS.ink : COLORS.muted, cursor: 'pointer', marginBottom: -1,
-            }}>{t.label}</button>
-          ))}
-        </div>
-
-        {tab === 'dashboard' && <DashboardTab user={user} />}
-        {tab === 'log' && <SituationLogTab user={user} />}
-        {tab === 'tasks' && <TasksTab user={user} />}
-        {tab === 'shifts' && <ShiftsTab user={user} />}
-        {tab === 'reports' && <ReportsTab user={user} />}
-        {tab === 'files' && <FilesTab user={user} />}
-        {tab === 'chat' && <ChatTab user={user} />}
-        {tab === 'admin' && isAdmin && <AdminTab />}
-      </div>
-    </div>
+      </LabelsContext.Provider>
+    </UserDirectoryContext.Provider>
   );
 }
 
