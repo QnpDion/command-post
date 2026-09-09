@@ -129,6 +129,24 @@ function accentByHex(hex) {
   return ACCENT_PRESETS.find((p) => p.accent === hex) || DEFAULT_ACCENT;
 }
 
+const TAB_META = {
+  dashboard: 'Головна', log: 'Журнал', tasks: 'Завдання', shifts: 'Зміни',
+  reports: 'Доповіді', notes: 'Нотатки', files: 'Файли', chat: 'Чат',
+};
+const DASHBOARD_SECTION_META = {
+  stats: 'Статистика завдань', shift: 'Сьогоднішня зміна', log: 'Останні записи журналу',
+};
+const DEFAULT_LAYOUT = {
+  tabOrder: Object.keys(TAB_META),
+  hiddenTabs: [],
+  dashboardOrder: ['stats', 'shift', 'log'],
+  hiddenDashboard: [],
+};
+const LayoutContext = createContext(DEFAULT_LAYOUT);
+function useLayout() {
+  return useContext(LayoutContext);
+}
+
 function authErrorMessage(code) {
   const map = {
     'auth/invalid-email': 'Некоректна адреса пошти.',
@@ -346,7 +364,63 @@ async function exportBackup() {
   URL.revokeObjectURL(url);
 }
 
-function AdminTab() {
+function ReorderList({ items, meta, hidden, onChange }) {
+  function move(idx, dir) {
+    const next = [...items];
+    const j = idx + dir;
+    if (j < 0 || j >= next.length) return;
+    [next[idx], next[j]] = [next[j], next[idx]];
+    onChange({ order: next, hidden });
+  }
+  function toggleHidden(key) {
+    const next = hidden.includes(key) ? hidden.filter((k) => k !== key) : [...hidden, key];
+    onChange({ order: items, hidden: next });
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {items.map((key, idx) => (
+        <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, opacity: hidden.includes(key) ? 0.5 : 1 }}>
+          <span style={{ flex: 1, fontSize: 14 }}>{meta[key] || key}</span>
+          <button onClick={() => move(idx, -1)} disabled={idx === 0} style={{ border: 'none', background: 'none', cursor: idx === 0 ? 'default' : 'pointer', fontSize: 14, opacity: idx === 0 ? 0.3 : 1 }}>↑</button>
+          <button onClick={() => move(idx, 1)} disabled={idx === items.length - 1} style={{ border: 'none', background: 'none', cursor: idx === items.length - 1 ? 'default' : 'pointer', fontSize: 14, opacity: idx === items.length - 1 ? 0.3 : 1 }}>↓</button>
+          <button onClick={() => toggleHidden(key)} style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${COLORS.border}`, background: '#fff', fontSize: 12, cursor: 'pointer' }}>
+            {hidden.includes(key) ? 'Показати' : 'Сховати'}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LayoutTab({ user }) {
+  const layout = useLayout();
+
+  async function saveTabs({ order, hidden }) {
+    await window.__db.collection('config').doc('layout').set({ tabOrder: order, hiddenTabs: hidden }, { merge: true });
+    logAudit(user.email, 'Вигляд', 'Змінено порядок/видимість вкладок');
+  }
+  async function saveDashboard({ order, hidden }) {
+    await window.__db.collection('config').doc('layout').set({ dashboardOrder: order, hiddenDashboard: hidden }, { merge: true });
+    logAudit(user.email, 'Вигляд', 'Змінено блоки Головної');
+  }
+
+  const tabOrderFull = [...layout.tabOrder, ...Object.keys(TAB_META).filter((k) => !layout.tabOrder.includes(k))];
+  const dashOrderFull = [...layout.dashboardOrder, ...Object.keys(DASHBOARD_SECTION_META).filter((k) => !layout.dashboardOrder.includes(k))];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: PAGE_MUTED, marginBottom: 10 }}>Порядок і видимість вкладок</div>
+        <ReorderList items={tabOrderFull} meta={TAB_META} hidden={layout.hiddenTabs} onChange={saveTabs} />
+      </div>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: PAGE_MUTED, marginBottom: 10 }}>Блоки на Головній</div>
+        <ReorderList items={dashOrderFull} meta={DASHBOARD_SECTION_META} hidden={layout.hiddenDashboard} onChange={saveDashboard} />
+      </div>
+    </div>
+  );
+}
   const [users, setUsers] = useState(null);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
@@ -501,6 +575,7 @@ function EditableTitle({ value, onSave }) {
 function DashboardTab({ user, isAdmin }) {
   const dir = useDirectory();
   const labels = useLabels();
+  const layout = useLayout();
   const [tasks, setTasks] = useState([]);
   const [logEntries, setLogEntries] = useState([]);
   const [shifts, setShifts] = useState([]);
@@ -536,68 +611,87 @@ function DashboardTab({ user, isAdmin }) {
 
   const expandedTasks = useMemo(() => tasks.filter((t) => t.status === expanded), [tasks, expanded]);
 
+  const sections = {
+    stats: (
+      <div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
+          {boxes.map((b) => (
+            <div key={b.key} onClick={() => setExpanded(expanded === b.key ? null : b.key)}
+              style={{ textAlign: 'left', cursor: 'pointer', border: expanded === b.key ? `2px solid ${b.color}` : `1px solid ${COLORS.border}`, background: COLORS.surface, borderRadius: 10, padding: '12px 14px' }}>
+              {isAdmin ? (
+                <EditableLabel value={labels[b.key]} onSave={(v) => saveLabel(b.key, v)} />
+              ) : (
+                <div style={{ fontSize: 11, color: COLORS.muted }}>{labels[b.key]}</div>
+              )}
+              <div style={{ fontSize: 22, fontWeight: 600, color: b.color }}>{counts[b.key] || 0}</div>
+            </div>
+          ))}
+        </div>
+
+        {expanded && (
+          <Card style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 10 }}>
+              {labels[expanded]}
+            </div>
+            {expandedTasks.length === 0 ? (
+              <div style={{ fontSize: 13, color: COLORS.muted }}>Немає завдань у цьому статусі.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {expandedTasks.map((t) => (
+                  <div key={t.id} style={{ fontSize: 13, padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div style={{ fontWeight: 600, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.status === 'done' ? COLORS.muted : COLORS.ink }}>{t.title}</div>
+                    <div style={{ color: COLORS.muted, fontSize: 12 }}>
+                      {t.claimedBy ? `Виконує: ${nameFor(dir, t.claimedBy)}` : 'Ще ніхто не взяв'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
+      </div>
+    ),
+    shift: (
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: PAGE_MUTED, marginBottom: 10 }}>Сьогоднішня зміна</div>
+        {shifts.length === 0 ? (
+          <div style={{ color: PAGE_MUTED, fontSize: 14 }}>Ніхто не призначений на сьогодні.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {shifts.map((s) => (
+              <Card key={s.id} style={{ padding: '10px 14px', fontSize: 13 }}>{s.timeRange} — {nameFor(dir, s.assignedTo)}{s.note ? ` (${s.note})` : ''}</Card>
+            ))}
+          </div>
+        )}
+      </div>
+    ),
+    log: (
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: PAGE_MUTED, marginBottom: 10 }}>Останні записи журналу</div>
+        {logEntries.length === 0 ? (
+          <div style={{ color: PAGE_MUTED, fontSize: 14 }}>Записів ще немає.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {logEntries.map((e) => (
+              <Card key={e.id} style={{ padding: '10px 14px', fontSize: 13 }}>
+                <div style={{ color: COLORS.muted, fontSize: 11, marginBottom: 2 }}>{fmtTime(e.createdAt)} · {nameFor(dir, e.author)}</div>
+                {e.text}
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    ),
+  };
+
+  const order = [...layout.dashboardOrder, ...Object.keys(DASHBOARD_SECTION_META).filter((k) => !layout.dashboardOrder.includes(k))];
+  const visibleOrder = order.filter((k) => !layout.hiddenDashboard.includes(k) && sections[k]);
+
   return (
     <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
-        {boxes.map((b) => (
-          <div key={b.key} onClick={() => setExpanded(expanded === b.key ? null : b.key)}
-            style={{ textAlign: 'left', cursor: 'pointer', border: expanded === b.key ? `2px solid ${b.color}` : `1px solid ${COLORS.border}`, background: COLORS.surface, borderRadius: 10, padding: '12px 14px' }}>
-            {isAdmin ? (
-              <EditableLabel value={labels[b.key]} onSave={(v) => saveLabel(b.key, v)} />
-            ) : (
-              <div style={{ fontSize: 11, color: COLORS.muted }}>{labels[b.key]}</div>
-            )}
-            <div style={{ fontSize: 22, fontWeight: 600, color: b.color }}>{counts[b.key] || 0}</div>
-          </div>
-        ))}
-      </div>
-
-      {expanded && (
-        <Card style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 10 }}>
-            {labels[expanded]}
-          </div>
-          {expandedTasks.length === 0 ? (
-            <div style={{ fontSize: 13, color: COLORS.muted }}>Немає завдань у цьому статусі.</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {expandedTasks.map((t) => (
-                <div key={t.id} style={{ fontSize: 13, padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}>
-                  <div style={{ fontWeight: 600, textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.status === 'done' ? COLORS.muted : COLORS.ink }}>{t.title}</div>
-                  <div style={{ color: COLORS.muted, fontSize: 12 }}>
-                    {t.claimedBy ? `Виконує: ${nameFor(dir, t.claimedBy)}` : 'Ще ніхто не взяв'}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-      )}
-
-      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 10 }}>Сьогоднішня зміна</div>
-      {shifts.length === 0 ? (
-        <div style={{ color: COLORS.muted, fontSize: 14, marginBottom: 24 }}>Ніхто не призначений на сьогодні.</div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 24 }}>
-          {shifts.map((s) => (
-            <Card key={s.id} style={{ padding: '10px 14px', fontSize: 13 }}>{s.timeRange} — {nameFor(dir, s.assignedTo)}{s.note ? ` (${s.note})` : ''}</Card>
-          ))}
-        </div>
-      )}
-
-      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.muted, marginBottom: 10 }}>Останні записи журналу</div>
-      {logEntries.length === 0 ? (
-        <div style={{ color: COLORS.muted, fontSize: 14 }}>Записів ще немає.</div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {logEntries.map((e) => (
-            <Card key={e.id} style={{ padding: '10px 14px', fontSize: 13 }}>
-              <div style={{ color: COLORS.muted, fontSize: 11, marginBottom: 2 }}>{fmtTime(e.createdAt)} · {nameFor(dir, e.author)}</div>
-              {e.text}
-            </Card>
-          ))}
-        </div>
-      )}
+      {visibleOrder.map((key, i) => (
+        <div key={key} style={{ marginBottom: i < visibleOrder.length - 1 ? 24 : 0 }}>{sections[key]}</div>
+      ))}
     </div>
   );
 }
@@ -1193,6 +1287,7 @@ function Board({ user, isAdmin }) {
   const [tab, setTab] = useState('dashboard');
   const [directory, setDirectory] = useState({});
   const [labels, setLabels] = useState(DEFAULT_LABELS);
+  const [layout, setLayout] = useState(DEFAULT_LAYOUT);
   useNotificationSetup(user, true);
 
   useEffect(() => {
@@ -1214,25 +1309,29 @@ function Board({ user, isAdmin }) {
     return unsub;
   }, []);
 
+  useEffect(() => {
+    const unsub = window.__db.collection('config').doc('layout').onSnapshot((snap) => {
+      if (snap.exists) setLayout({ ...DEFAULT_LAYOUT, ...snap.data() });
+    });
+    return unsub;
+  }, []);
+
   const myAccentHex = (directory[user.email] && directory[user.email].themeAccent) || DEFAULT_ACCENT.accent;
   const theme = accentByHex(myAccentHex);
 
-  const tabs = [
-    { key: 'dashboard', label: 'Головна' },
-    { key: 'log', label: 'Журнал' },
-    { key: 'tasks', label: 'Завдання' },
-    { key: 'shifts', label: 'Зміни' },
-    { key: 'reports', label: 'Доповіді' },
-    { key: 'notes', label: 'Нотатки' },
-    { key: 'files', label: 'Файли' },
-    { key: 'chat', label: 'Чат' },
-    { key: 'profile', label: 'Профіль' },
-  ];
-  if (isAdmin) tabs.push({ key: 'admin', label: 'Учасники' });
+  const orderedKeys = [...layout.tabOrder, ...Object.keys(TAB_META).filter((k) => !layout.tabOrder.includes(k))]
+    .filter((k) => TAB_META[k] && !layout.hiddenTabs.includes(k));
+  const tabs = orderedKeys.map((k) => ({ key: k, label: TAB_META[k] }));
+  tabs.push({ key: 'profile', label: 'Профіль' });
+  if (isAdmin) {
+    tabs.push({ key: 'layout', label: 'Вигляд' });
+    tabs.push({ key: 'admin', label: 'Учасники' });
+  }
 
   return (
     <UserDirectoryContext.Provider value={directory}>
       <LabelsContext.Provider value={labels}>
+        <LayoutContext.Provider value={layout}>
         <ThemeContext.Provider value={theme}>
         <div style={{ background: COLORS.bg, minHeight: '100vh' }}>
           <div style={{ maxWidth: 920, margin: '0 auto', padding: '32px 20px 60px' }}>
@@ -1271,10 +1370,12 @@ function Board({ user, isAdmin }) {
             {tab === 'files' && <FilesTab user={user} />}
             {tab === 'chat' && <ChatTab user={user} isAdmin={isAdmin} />}
             {tab === 'profile' && <ProfileTab user={user} />}
+            {tab === 'layout' && isAdmin && <LayoutTab user={user} />}
             {tab === 'admin' && isAdmin && <AdminTab />}
           </div>
         </div>
         </ThemeContext.Provider>
+        </LayoutContext.Provider>
       </LabelsContext.Provider>
     </UserDirectoryContext.Provider>
   );
